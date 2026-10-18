@@ -248,7 +248,7 @@ const verifyWebhook = asyncHandler(async (req, res) => {
   const token = params.get("hub.verify_token")?.trim();
   const challenge = params.get("hub.challenge")?.trim();
 
-  const configuredToken = env.metaWhatsapp.verifyToken;
+  const configuredToken = "agarwal_homez";
 
   if (
     mode === "subscribe" &&
