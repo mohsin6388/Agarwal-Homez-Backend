@@ -104,4 +104,11 @@ router.delete(
   deleteProperty,
 );
 
+// router.delete(
+//   "/:id",
+//   roleGuard("builder", "admin"),
+//   validate(idParamSchema),
+//   deleteProperty,
+// );
+
 module.exports = router;
