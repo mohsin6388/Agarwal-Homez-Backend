@@ -418,6 +418,57 @@ const launch = asyncHandler(async (req, res) => {
   ).send(res);
 });
 
+/** DELETE /api/campaigns/:id */
+const remove = asyncHandler(async (req, res) => {
+  const campaign = await Campaign.findOne({
+    _id: req.params.id,
+    ownerId: req.user.id,
+  });
+
+  if (!campaign) {
+    throw ApiError.notFound("Campaign not found");
+  }
+
+  // Active ya paused campaign ko pehle cancel karna zaroori hai.
+  if (["active", "paused"].includes(campaign.status)) {
+    throw ApiError.badRequest("Please cancel the campaign before deleting it.");
+  }
+
+  // Processing job ke dauran delete mat karo.
+  const processingJobs = await OutboundJob.countDocuments({
+    ownerId: req.user.id,
+    campaignId: campaign._id,
+    status: "processing",
+  });
+
+  if (processingJobs > 0) {
+    throw ApiError.badRequest(
+      "Campaign has jobs being processed. Please try again later.",
+    );
+  }
+
+  // Campaign ke associated records remove karo.
+  await OutboundJob.deleteMany({
+    ownerId: req.user.id,
+    campaignId: campaign._id,
+  });
+
+  await EmailMessage.deleteMany({
+    ownerId: req.user.id,
+    campaignId: campaign._id,
+    direction: "outbound",
+    kind: "campaign",
+  });
+
+  await campaign.deleteOne();
+
+  return new ApiResponse(
+    200,
+    { campaignId: String(campaign._id) },
+    "Campaign deleted successfully.",
+  ).send(res);
+});
+
 /**
  * POST /api/campaigns/preview
  * Preview selected contacts or a saved audience without sending messages.
@@ -719,6 +770,7 @@ module.exports = {
   getOne,
   pause,
   resume,
+  remove,
   cancel,
   retry,
   summary,

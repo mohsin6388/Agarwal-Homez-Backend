@@ -56,6 +56,8 @@ router.get("/", c.list);
 
 router.get("/:id", validate(campaignIdSchema), c.getOne);
 
+router.delete("/:id", validate(campaignIdSchema), c.remove);
+
 router.post("/:id/pause", validate(campaignIdSchema), c.pause);
 
 router.post("/:id/resume", validate(campaignIdSchema), c.resume);
