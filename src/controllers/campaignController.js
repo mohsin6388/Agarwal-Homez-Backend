@@ -21,7 +21,10 @@
 //     config: { ...config, audienceId },
 //   });
 //   if (audienceId) {
-//     await Audience.updateOne({ _id: audienceId, ownerId: req.user.id }, { $set: { lastUsedAt: new Date() } });
+//     await Audience.updateOne(
+//       { _id: audienceId, ownerId: req.user.id },
+//       { $set: { lastUsedAt: new Date() } },
+//     );
 //   }
 
 //   const { whatsapp, email } = result.queued;
@@ -73,7 +76,13 @@
 
 //     if (message === "Campaign cancelled") {
 //       await EmailMessage.updateMany(
-//         { ownerId: req.user.id, campaignId: result.campaign._id, direction: "outbound", kind: "campaign", status: { $in: ["queued", "sending"] } },
+//         {
+//           ownerId: req.user.id,
+//           campaignId: result.campaign._id,
+//           direction: "outbound",
+//           kind: "campaign",
+//           status: { $in: ["queued", "sending"] },
+//         },
 //         { $set: { status: "cancelled" } },
 //       );
 //     }
@@ -113,6 +122,35 @@
 //   "Failed jobs re-queued",
 // );
 
+// /** DELETE /api/campaigns/:id — hide campaign from the list without erasing delivery history. */
+// const remove = asyncHandler(async (req, res) => {
+//   const campaign = await Campaign.findOne({
+//     _id: req.params.id,
+//     ownerId: req.user.id,
+//     deletedAt: null,
+//   });
+//   if (!campaign) throw ApiError.notFound("Campaign not found");
+
+//   // Stop any remaining queued sends before hiding the campaign.
+//   if (["active", "paused"].includes(campaign.status)) {
+//     const result = await queue.cancelCampaign(req.user.id, campaign._id);
+//     if (result?.campaign) campaign.status = result.campaign.status;
+//   }
+
+//   campaign.deletedAt = new Date();
+//   await campaign.save();
+//   emitToUser(req.user.id, "outreach:campaign", {
+//     campaignId: String(campaign._id),
+//     status: campaign.status,
+//     deleted: true,
+//   });
+//   return new ApiResponse(
+//     200,
+//     { campaignId: String(campaign._id), deleted: true },
+//     "Campaign removed from list",
+//   ).send(res);
+// });
+
 // /** GET /api/outreach/summary — sidebar badges + page header cards */
 // const summary = asyncHandler(async (req, res) => {
 //   const data = await queue.getOutreachSummary(req.user.id);
@@ -133,6 +171,7 @@
 //   resume,
 //   cancel,
 //   retry,
+//   remove,
 //   summary,
 //   jobs,
 // };
@@ -143,6 +182,7 @@ const ApiResponse = require("../utils/ApiResponse");
 const Campaign = require("../models/Campaign");
 const Audience = require("../models/Audience");
 const EmailMessage = require("../models/EmailMessage");
+const OutboundJob = require("../models/OutboundJob");
 const { launchCampaign } = require("../services/campaign/campaignService");
 const queue = require("../services/queue/outboundQueue");
 const { emitToUser } = require("../sockets");
@@ -278,6 +318,14 @@ const remove = asyncHandler(async (req, res) => {
 
   campaign.deletedAt = new Date();
   await campaign.save();
+
+  // Remove this campaign's rows from WhatsApp/Email bulk history, but do not
+  // delete any Lead/contact records from Upload Data.
+  await Promise.all([
+    OutboundJob.deleteMany({ ownerId: req.user.id, campaignId: campaign._id }),
+    EmailMessage.deleteMany({ ownerId: req.user.id, campaignId: campaign._id }),
+  ]);
+
   emitToUser(req.user.id, "outreach:campaign", {
     campaignId: String(campaign._id),
     status: campaign.status,

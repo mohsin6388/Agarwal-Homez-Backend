@@ -199,13 +199,18 @@
 
 //   let eligibleIndex = 0;
 //   leads.forEach((lead) => {
-//     const hasSelectedChannel = (wantWa && lead.hasPhone) || (wantEmail && lead.hasEmail);
+//     const hasSelectedChannel =
+//       (wantWa && lead.hasPhone) || (wantEmail && lead.hasEmail);
 //     if (!hasSelectedChannel) return; // still imported into CRM; never schedule an empty channel job
 
 //     const dayIndex = perDay ? Math.floor(eligibleIndex / perDay) : 0;
 //     const runAt = perDay
 //       ? (() => {
-//           const scheduled = runAtForDay(campaign.startDate, campaign.sendTime, dayIndex);
+//           const scheduled = runAtForDay(
+//             campaign.startDate,
+//             campaign.sendTime,
+//             dayIndex,
+//           );
 //           return scheduled < now ? now : scheduled;
 //         })()
 //       : now;
@@ -241,40 +246,51 @@
 //   // between these two writes; outboundJobId is unique/idempotent.
 //   const insertedJobs = [];
 //   for (let i = 0; i < docs.length; i += INSERT_CHUNK) {
-//     const insertedChunk = await OutboundJob.insertMany(docs.slice(i, i + INSERT_CHUNK), { ordered: false });
+//     const insertedChunk = await OutboundJob.insertMany(
+//       docs.slice(i, i + INSERT_CHUNK),
+//       { ordered: false },
+//     );
 //     insertedJobs.push(...insertedChunk);
 //   }
 
 //   if (wantEmail && insertedJobs.length) {
 //     const leadsById = new Map(leads.map((lead) => [String(lead._id), lead]));
-//     const trackerDocs = insertedJobs.filter((job) => job.channel === "email").map((job) => {
-//       const lead = leadsById.get(String(job.leadId));
-//       const message = new EmailMessage({
-//         ownerId: job.ownerId,
-//         leadId: job.leadId,
-//         campaignId: job.campaignId,
-//         outboundJobId: job._id,
-//         direction: "outbound",
-//         kind: "campaign",
-//         trackingId: randomUUID().replace(/-/g, ""),
-//         from: getFromAddress(),
-//         to: lead?.email || "",
-//         subject: campaign.email?.subject || "",
-//         text: campaign.email?.body || "",
-//         status: "queued",
-//         replyStatus: "waiting",
+//     const trackerDocs = insertedJobs
+//       .filter((job) => job.channel === "email")
+//       .map((job) => {
+//         const lead = leadsById.get(String(job.leadId));
+//         const message = new EmailMessage({
+//           ownerId: job.ownerId,
+//           leadId: job.leadId,
+//           campaignId: job.campaignId,
+//           outboundJobId: job._id,
+//           direction: "outbound",
+//           kind: "campaign",
+//           trackingId: randomUUID().replace(/-/g, ""),
+//           from: getFromAddress(),
+//           to: lead?.email || "",
+//           subject: campaign.email?.subject || "",
+//           text: campaign.email?.body || "",
+//           status: "queued",
+//           replyStatus: "waiting",
+//         });
+//         message.threadId = message._id;
+//         return message;
 //       });
-//       message.threadId = message._id;
-//       return message;
-//     });
 //     if (trackerDocs.length) {
 //       try {
 //         await EmailMessage.insertMany(trackerDocs, { ordered: false });
 //       } catch (err) {
 //         // A worker may have won the race and inserted the same outboundJobId.
 //         // Ignore only duplicate-key collisions; other write errors must surface.
-//         if (!err.writeErrors || err.writeErrors.some((item) => item.code !== 11000)) {
-//           logger.error("[email-tracker] Could not create scheduled email tracker rows; worker will attempt lazy recovery", { error: err.message, campaignId: String(campaign._id) });
+//         if (
+//           !err.writeErrors ||
+//           err.writeErrors.some((item) => item.code !== 11000)
+//         ) {
+//           logger.error(
+//             "[email-tracker] Could not create scheduled email tracker rows; worker will attempt lazy recovery",
+//             { error: err.message, campaignId: String(campaign._id) },
+//           );
 //         }
 //       }
 //     }
@@ -295,7 +311,7 @@
 
 // /** Owner ke recent campaigns + har ek ka channel-wise progress */
 // async function listCampaigns(ownerId, { limit = 20 } = {}) {
-//   const campaigns = await Campaign.find({ ownerId })
+//   const campaigns = await Campaign.find({ ownerId, deletedAt: null })
 //     .sort({ createdAt: -1 })
 //     .limit(limit)
 //     .lean();
@@ -321,7 +337,13 @@
 //   for (const r of rows) {
 //     const key = String(r._id.campaignId);
 //     if (!statsById.has(key)) statsById.set(key, emptyByChannel());
-//     addRow(statsById.get(key), r._id.channel, r._id.status, r._id.future, r.count);
+//     addRow(
+//       statsById.get(key),
+//       r._id.channel,
+//       r._id.status,
+//       r._id.future,
+//       r.count,
+//     );
 //   }
 
 //   return campaigns.map((c) => ({
@@ -456,7 +478,10 @@
 //     },
 //   });
 
-//   if (res.modifiedCount && ["completed", "cancelled"].includes(campaign.status)) {
+//   if (
+//     res.modifiedCount &&
+//     ["completed", "cancelled"].includes(campaign.status)
+//   ) {
 //     campaign.status = "active";
 //     campaign.completedAt = null;
 //     await campaign.save();
@@ -859,7 +884,37 @@ async function listJobs(
   ownerId,
   { channel, campaignId, status, page = 1, limit = 50 } = {},
 ) {
-  const filter = { ownerId: oid(ownerId) };
+  const ownerObjectId = oid(ownerId);
+  const filter = { ownerId: ownerObjectId };
+
+  // Legacy cleanup: hide/remove rows left behind by deleted contacts or campaigns.
+  // Contact records remain untouched when only a campaign is removed.
+  const [deletedCampaigns, validLeadIds] = await Promise.all([
+    Campaign.find({ ownerId: ownerObjectId, deletedAt: { $ne: null } })
+      .select("_id")
+      .lean(),
+    require("../../models/Lead").distinct("_id", { ownerId: ownerObjectId }),
+  ]);
+  const deletedCampaignIds = deletedCampaigns.map((campaign) => campaign._id);
+  if (deletedCampaignIds.length) {
+    await OutboundJob.deleteMany({
+      ownerId: ownerObjectId,
+      campaignId: { $in: deletedCampaignIds },
+    });
+    await EmailMessage.deleteMany({
+      ownerId: ownerObjectId,
+      campaignId: { $in: deletedCampaignIds },
+    });
+  }
+  await OutboundJob.deleteMany({
+    ownerId: ownerObjectId,
+    leadId: { $nin: validLeadIds },
+  });
+  await EmailMessage.deleteMany({
+    ownerId: ownerObjectId,
+    leadId: { $nin: validLeadIds, $ne: null },
+  });
+
   if (channel) filter.channel = channel;
   if (campaignId) filter.campaignId = oid(campaignId);
 
@@ -876,7 +931,7 @@ async function listJobs(
 
   const [jobs, total] = await Promise.all([
     OutboundJob.find(filter)
-      .sort({ scheduledFor: 1, seq: 1, priority: 1 })
+      .sort({ sentAt: -1, updatedAt: -1, createdAt: -1, seq: 1 })
       .skip((page - 1) * limit)
       .limit(limit)
       .populate("leadId", "name phone email")
