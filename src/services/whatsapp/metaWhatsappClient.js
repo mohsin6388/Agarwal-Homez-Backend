@@ -1,6 +1,7 @@
 const axios = require("axios");
 const env = require("../../config/env");
 const logger = require("../../utils/logger");
+const { normalizePhones } = require("../../utils/contactNormalizer");
 
 /**
  * Thin wrapper around the official Meta WhatsApp Cloud API
@@ -53,20 +54,30 @@ function headers() {
 function toWhatsAppNumber(phone) {
   if (!phone) throw new Error("Phone number is required");
 
-  let digits = String(phone).replace(/[^\d]/g, "");
-
-  if (!digits) {
-    throw new Error(`Phone number "${phone}" has no digits`);
+  // Shared normalizer: strips 0 / 00 / +91 prefixes, Excel ".0" artefacts,
+  // rejects 9/11-digit numbers instead of silently storing a wrong number.
+  const result = normalizePhones(phone, {
+    defaultCountryCode: env.metaWhatsapp.defaultCountryCode || "91",
+  });
+  if (!result.phone) {
+    throw new Error(result.errors[0] || `Phone number "${phone}" is not valid`);
   }
+  return result.phone;
+}
 
-  // If a lead was entered as a plain 10-digit Indian mobile number, make it
-  // WhatsApp-ready automatically. International numbers with an explicit
-  // country code are left untouched.
-  if (digits.length === 10 && env.metaWhatsapp.defaultCountryCode) {
-    digits = `${env.metaWhatsapp.defaultCountryCode}${digits}`;
+/**
+ * Sending path: numbers already stored in the DB must keep working even if
+ * they would not pass today's stricter import validation, so fall back to the
+ * previous digits-only behaviour instead of throwing.
+ */
+function toSendableNumber(phone) {
+  try {
+    return toWhatsAppNumber(phone);
+  } catch {
+    const digits = String(phone || "").replace(/[^\d]/g, "");
+    if (!digits) throw new Error(`Phone number "${phone}" has no digits`);
+    return digits;
   }
-
-  return digits;
 }
 
 function extractMessageId(data) {
@@ -108,7 +119,7 @@ async function sendTemplateMessage({
 
   const payload = {
     messaging_product: "whatsapp",
-    to: toWhatsAppNumber(phone),
+    to: toSendableNumber(phone),
     type: "template",
     template: {
       name: templateName,
@@ -155,7 +166,7 @@ async function sendTextMessage({ phone, text }) {
 
   const payload = {
     messaging_product: "whatsapp",
-    to: toWhatsAppNumber(phone),
+    to: toSendableNumber(phone),
     type: "text",
     text: {
       body: text,
@@ -213,7 +224,7 @@ async function sendImageMessage({ phone, imageUrl, caption }) {
 
   const payload = {
     messaging_product: "whatsapp",
-    to: toWhatsAppNumber(phone),
+    to: toSendableNumber(phone),
     type: "image",
     image: {
       link: imageUrl,
@@ -256,7 +267,7 @@ async function sendDocumentMessage({ phone, documentUrl, filename, caption }) {
 
   const payload = {
     messaging_product: "whatsapp",
-    to: toWhatsAppNumber(phone),
+    to: toSendableNumber(phone),
     type: "document",
     document: {
       link: documentUrl,

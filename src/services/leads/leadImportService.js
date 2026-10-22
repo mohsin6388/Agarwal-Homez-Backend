@@ -1,22 +1,43 @@
 const Lead = require("../../models/Lead");
 const Conversation = require("../../models/Conversation");
-const { toWhatsAppNumber } = require("../whatsapp/metaWhatsappClient");
+const {
+  normalizePhones,
+  normalizeEmails,
+} = require("../../utils/contactNormalizer");
+
+function phoneVariants(phones) {
+  const out = new Set();
+  for (const p of phones) {
+    out.add(p);
+    if (/^91\d{10}$/.test(p)) {
+      out.add(p.slice(2));
+      out.add(`0${p.slice(2)}`);
+      out.add(`+${p}`);
+    }
+  }
+  return [...out];
+}
 
 function fallbackName(row, phone) {
   const name = String(row.name || "").trim();
   if (name) return name;
-  if (row.email) return String(row.email).split("@")[0].replace(/[._+-]+/g, " ").trim() || "Email lead";
+  if (row.email)
+    return (
+      String(row.email)
+        .split("@")[0]
+        .replace(/[._+-]+/g, " ")
+        .trim() || "Email lead"
+    );
   if (phone) return `Lead ${String(phone).slice(-4)}`;
   return "New lead";
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 /**
- * Normalizes mixed-channel contact rows and checks duplicates in the database
- * and inside this request before writing. A bad phone never discards a valid
- * email address on the same row (and vice versa). The partial phone index is
- * the final race-condition guard for simultaneous phone duplicates.
+ * Re-validates every row on the server (the browser copy is never trusted),
+ * normalizes phone/email, and checks duplicates in the database and inside this
+ * request before writing. A bad phone never discards a valid email on the same
+ * row (and vice versa). The partial phone index is the final race-condition
+ * guard for simultaneous phone duplicates.
  */
 async function importLeadRows(ownerId, rows) {
   const normalized = [];
@@ -24,39 +45,56 @@ async function importLeadRows(ownerId, rows) {
   let skipped = 0;
 
   for (const row of rows || []) {
-    let phone = null;
-    const rawPhone = String(row.phone || "").trim();
-    let email = String(row.email || "").trim().toLowerCase();
-
-    if (email && !EMAIL_RE.test(email)) email = "";
-    if (rawPhone) {
-      try {
-        phone = toWhatsAppNumber(rawPhone);
-      } catch {
-        phone = null; // Keep a valid email contact, if present.
-      }
-    }
+    const phoneResult = normalizePhones(row.phone);
+    const emailResult = normalizeEmails(row.email);
+    const phone = phoneResult.phone || null;
+    const email = emailResult.email || "";
 
     if (!phone && !email) {
       invalid += 1;
       continue;
     }
-    normalized.push({ row, phone, email: email || null });
+    const extras = [...phoneResult.extras.map((p) => `Alternate number: ${p}`)];
+    normalized.push({ row, phone, email: email || null, extras });
   }
 
-  if (!normalized.length) return { inserted: [], skipped, invalid, existingIds: [] };
+  if (!normalized.length)
+    return { inserted: [], skipped, invalid, existingIds: [] };
 
-  const phones = [...new Set(normalized.map((item) => item.phone).filter(Boolean))];
-  const emails = [...new Set(normalized.map((item) => item.email).filter(Boolean))];
+  const phones = [
+    ...new Set(normalized.map((item) => item.phone).filter(Boolean)),
+  ];
+  const emails = [
+    ...new Set(normalized.map((item) => item.email).filter(Boolean)),
+  ];
   const [existingPhoneRows, existingEmailRows] = await Promise.all([
-    phones.length ? Lead.find({ ownerId, phone: { $in: phones } }, { phone: 1 }).lean() : [],
-    emails.length ? Lead.find({ ownerId, email: { $in: emails } }, { email: 1 }).lean() : [],
+    phones.length
+      ? Lead.find(
+          { ownerId, phone: { $in: phoneVariants(phones) } },
+          { phone: 1 },
+        ).lean()
+      : [],
+    emails.length
+      ? Lead.find({ ownerId, email: { $in: emails } }, { email: 1 }).lean()
+      : [],
   ]);
   // Contacts already in Upload Data: not re-inserted, but returned so a bulk
   // upload can still build an audience from the whole sheet.
-  const existingIds = [...new Set([...existingPhoneRows, ...existingEmailRows].map((lead) => String(lead._id)))];
-  const seenPhones = new Set(existingPhoneRows.map((lead) => lead.phone));
-  const seenEmails = new Set(existingEmailRows.map((lead) => String(lead.email || "").toLowerCase()));
+  const existingIds = [
+    ...new Set(
+      [...existingPhoneRows, ...existingEmailRows].map((lead) =>
+        String(lead._id),
+      ),
+    ),
+  ];
+  const seenPhones = new Set(
+    existingPhoneRows.map(
+      (lead) => normalizePhones(lead.phone).phone || lead.phone,
+    ),
+  );
+  const seenEmails = new Set(
+    existingEmailRows.map((lead) => String(lead.email || "").toLowerCase()),
+  );
   const docs = [];
 
   for (const item of normalized) {
@@ -74,17 +112,27 @@ async function importLeadRows(ownerId, rows) {
       name: fallbackName({ ...row, email }, phone),
       phone,
       email: email || undefined,
-      city: row.city || undefined,
+      city: String(row.city || "").slice(0, 100) || undefined,
       location: row.location || undefined,
       address: row.address || undefined,
       jobTitle: row.jobTitle || undefined,
-      importFile: String(row.importFile || "").trim().slice(0, 200) || null,
+      importFile:
+        String(row.importFile || "")
+          .trim()
+          .slice(0, 200) || null,
       budgetMin: row.budgetMin ?? null,
       budgetMax: row.budgetMax ?? null,
       occupation: row.occupation || undefined,
       age: row.age ?? null,
       source: row.source || "csv_import",
-      notes: row.notes || undefined,
+      notes:
+        [
+          row.notes,
+          ...item.extras.filter((e) => !String(row.notes || "").includes(e)),
+        ]
+          .filter(Boolean)
+          .join(" | ")
+          .slice(0, 1500) || undefined,
       requirements: row.requirements || undefined,
     });
   }
@@ -96,7 +144,7 @@ async function importLeadRows(ownerId, rows) {
     inserted = await Lead.insertMany(docs, { ordered: false });
   } catch (err) {
     if (err.writeErrors) {
-      inserted = err.insertedDocs || [];
+      inserted = err.insertedDocs || err.mongoose?.insertedDocs || [];
       skipped += err.writeErrors.length;
     } else {
       throw err;
@@ -109,7 +157,10 @@ async function importLeadRows(ownerId, rows) {
   if (whatsappLeads.length) {
     try {
       await Conversation.insertMany(
-        whatsappLeads.map((lead) => ({ leadId: lead._id, ownerId: lead.ownerId })),
+        whatsappLeads.map((lead) => ({
+          leadId: lead._id,
+          ownerId: lead.ownerId,
+        })),
         { ordered: false },
       );
     } catch (err) {
