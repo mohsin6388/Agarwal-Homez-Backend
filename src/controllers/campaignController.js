@@ -4,6 +4,7 @@
 // const Campaign = require("../models/Campaign");
 // const Audience = require("../models/Audience");
 // const EmailMessage = require("../models/EmailMessage");
+// const OutboundJob = require("../models/OutboundJob");
 // const { launchCampaign } = require("../services/campaign/campaignService");
 // const queue = require("../services/queue/outboundQueue");
 // const { emitToUser } = require("../sockets");
@@ -139,6 +140,14 @@
 
 //   campaign.deletedAt = new Date();
 //   await campaign.save();
+
+//   // Remove this campaign's rows from WhatsApp/Email bulk history, but do not
+//   // delete any Lead/contact records from Upload Data.
+//   await Promise.all([
+//     OutboundJob.deleteMany({ ownerId: req.user.id, campaignId: campaign._id }),
+//     EmailMessage.deleteMany({ ownerId: req.user.id, campaignId: campaign._id }),
+//   ]);
+
 //   emitToUser(req.user.id, "outreach:campaign", {
 //     campaignId: String(campaign._id),
 //     status: campaign.status,
@@ -185,6 +194,7 @@ const EmailMessage = require("../models/EmailMessage");
 const OutboundJob = require("../models/OutboundJob");
 const { launchCampaign } = require("../services/campaign/campaignService");
 const queue = require("../services/queue/outboundQueue");
+const deliveryFailures = require("../services/queue/deliveryFailures");
 const { emitToUser } = require("../sockets");
 
 /** POST /api/campaigns/launch */
@@ -350,7 +360,52 @@ const jobs = asyncHandler(async (req, res) => {
   return new ApiResponse(200, data).send(res);
 });
 
+/** GET /api/campaigns/:id/delivery-failures — Meta webhook se failed contacts + timer */
+const deliveryFailuresList = asyncHandler(async (req, res) => {
+  const data = await deliveryFailures.getFailureDetails(
+    req.user.id,
+    req.params.id,
+  );
+  if (!data) throw ApiError.notFound("Campaign not found");
+  return new ApiResponse(200, data).send(res);
+});
+
+/** POST /api/campaigns/:id/retry-delivery-failed — sirf "ready" contacts dobara bhejo */
+const retryDeliveryFailed = asyncHandler(async (req, res) => {
+  const result = await deliveryFailures.retryReadyFailures(
+    req.user.id,
+    req.params.id,
+  );
+  if (!result) throw ApiError.notFound("Campaign not found");
+
+  if (result.reason === "campaign_cancelled") {
+    throw ApiError.badRequest(
+      "Campaign cancel ho chuki hai, resend nahi ho sakta.",
+    );
+  }
+
+  const stats = await queue.getCampaignStats(result.campaign._id);
+  emitToUser(req.user.id, "outreach:campaign", {
+    campaignId: String(result.campaign._id),
+    status: result.campaign.status,
+  });
+  emitToUser(req.user.id, "outreach:progress", {
+    campaignId: String(result.campaign._id),
+    stats,
+  });
+
+  return new ApiResponse(
+    200,
+    { requeued: result.requeued, stats },
+    result.requeued
+      ? `${result.requeued} contact(s) dobara bhejne ke liye queue mein daal diye`
+      : "Abhi koi contact ready nahi hai",
+  ).send(res);
+});
+
 module.exports = {
+  deliveryFailuresList,
+  retryDeliveryFailed,
   launch,
   list,
   getOne,
