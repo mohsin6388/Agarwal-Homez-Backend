@@ -77,7 +77,12 @@ const propertySchema = new Schema(
     isActive: { type: Boolean, default: true },
 
     // Excel-mode inventory status. Only "available" units are suggested by the AI.
-    availability: { type: String, enum: ["available", "booked", "sold"], default: "available", index: true },
+    availability: {
+      type: String,
+      enum: ["available", "booked", "sold"],
+      default: "available",
+      index: true,
+    },
     floor: { type: String, trim: true, default: "" },
     possession: { type: String, trim: true, default: "" },
   },

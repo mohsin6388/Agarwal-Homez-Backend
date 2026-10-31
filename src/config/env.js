@@ -13,7 +13,9 @@ const env = {
   port: parseInt(process.env.PORT || "5000", 10),
   clientUrl: process.env.CLIENT_URL || "http://localhost:5173",
   // When set, only this account may authenticate in the single-client deployment.
-  clientEmail: String(process.env.CLIENT_EMAIL || '').trim().toLowerCase(),
+  clientEmail: String(process.env.CLIENT_EMAIL || "")
+    .trim()
+    .toLowerCase(),
 
   mongoUri: required("MONGO_URI", "mongodb://127.0.0.1:27017/real_estate_crm"),
 
@@ -29,7 +31,9 @@ const env = {
 
   cookie: {
     secure: process.env.COOKIE_SECURE === "true",
-    sameSite: process.env.COOKIE_SAME_SITE || (process.env.COOKIE_SECURE === "true" ? "none" : "lax"),
+    sameSite:
+      process.env.COOKIE_SAME_SITE ||
+      (process.env.COOKIE_SECURE === "true" ? "none" : "lax"),
     domain: process.env.COOKIE_DOMAIN || undefined,
   },
 
@@ -46,14 +50,23 @@ const env = {
     replyTo: String(process.env.EMAIL_REPLY_TO || "").trim(),
     // Brevo inbound parsing uses a dedicated receiving subdomain, separate
     // from the sending domain (for example replies.yourcompany.com).
-    inboundDomain: String(process.env.EMAIL_INBOUND_DOMAIN || process.env.BREVO_INBOUND_DOMAIN || "").trim().toLowerCase(),
+    inboundDomain: String(
+      process.env.EMAIL_INBOUND_DOMAIN ||
+        process.env.BREVO_INBOUND_DOMAIN ||
+        "",
+    )
+      .trim()
+      .toLowerCase(),
     webhookSecret: process.env.BREVO_WEBHOOK_SECRET || null,
-    replyWindowHours: parseInt(process.env.EMAIL_REPLY_WINDOW_HOURS || "72", 10),
+    replyWindowHours: parseInt(
+      process.env.EMAIL_REPLY_WINDOW_HOURS || "72",
+      10,
+    ),
   },
 
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || null,
-    model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+    model: process.env.GEMINI_MODEL || "gemini-3.1-flash-light",
   },
   encryptionKey:
     process.env.ENCRYPTION_KEY || "dev_encryption_key_change_me_in_prod",

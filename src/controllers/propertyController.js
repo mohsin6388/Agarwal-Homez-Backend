@@ -234,11 +234,18 @@ const uploadBrochureAndImages = asyncHandler(async (req, res) => {
       name: property.projectName,
       city: property.city || "",
       location: property.location || "",
-      brochure: { url: brochure.url, name: brochure.originalName, publicId: brochure.publicId },
+      brochure: {
+        url: brochure.url,
+        name: brochure.originalName,
+        publicId: brochure.publicId,
+      },
       images,
     });
   } catch (err) {
-    console.error("[brochure-ai] Could not save brochure on site:", err.message);
+    console.error(
+      "[brochure-ai] Could not save brochure on site:",
+      err.message,
+    );
   }
 
   // ==========================================
@@ -298,7 +305,11 @@ const listProperties = asyncHandler(async (req, res) => {
   if (city) filter.city = new RegExp(`^${city}$`, "i");
   if (propertyType) filter.propertyType = new RegExp(`^${propertyType}$`, "i");
   if (bhk) filter.bhk = bhk;
-  if (availability) filter.availability = availability === "available" ? { $nin: ["booked", "sold"] } : availability;
+  if (availability)
+    filter.availability =
+      availability === "available"
+        ? { $nin: ["booked", "sold"] }
+        : availability;
   if (search) filter.$text = { $search: search };
 
   // Budget overlap: a property matches if its range overlaps the requested range at all.
