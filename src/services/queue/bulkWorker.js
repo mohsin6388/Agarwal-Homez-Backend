@@ -6,7 +6,11 @@
 
 // const conversationEngine = require("../ai/conversationEngine");
 // const settingsService = require("../settings/settingsService");
-// const { sendCampaignEmail, getFromAddress, makeReplyAddress } = require("../email/mailer");
+// const {
+//   sendCampaignEmail,
+//   getFromAddress,
+//   makeReplyAddress,
+// } = require("../email/mailer");
 // const EmailMessage = require("../../models/EmailMessage");
 // const crypto = require("crypto");
 // const {
@@ -107,14 +111,32 @@
 
 // function classifyEmailError(err) {
 //   const code = String(err?.code ?? "");
-//   const status = Number(err?.status || err?.response?.status || err?.responseCode || 0);
-//   const msg = String(err?.response?.data?.message || err?.message || err?.response || "").toLowerCase();
+//   const status = Number(
+//     err?.status || err?.response?.status || err?.responseCode || 0,
+//   );
+//   const msg = String(
+//     err?.response?.data?.message || err?.message || err?.response || "",
+//   ).toLowerCase();
 
-//   if (["BREVO_NOT_CONFIGURED", "BREVO_AUTH_ERROR", "SMTP_NOT_CONFIGURED", "EAUTH"].includes(code) || status === 401 || status === 403) {
+//   if (
+//     [
+//       "BREVO_NOT_CONFIGURED",
+//       "BREVO_AUTH_ERROR",
+//       "SMTP_NOT_CONFIGURED",
+//       "EAUTH",
+//     ].includes(code) ||
+//     status === 401 ||
+//     status === 403
+//   ) {
 //     return "fatal_pause";
 //   }
-//   if (code === "BREVO_INVALID_RECIPIENT" || code === "BREVO_INVALID_RESPONSE") return "permanent";
-//   if (status === 429 || code === "BREVO_RATE_LIMIT" || /quota|rate limit|too many|daily user sending|sending limit/.test(msg)) {
+//   if (code === "BREVO_INVALID_RECIPIENT" || code === "BREVO_INVALID_RESPONSE")
+//     return "permanent";
+//   if (
+//     status === 429 ||
+//     code === "BREVO_RATE_LIMIT" ||
+//     /quota|rate limit|too many|daily user sending|sending limit/.test(msg)
+//   ) {
 //     return "quota";
 //   }
 //   if (["EENVELOPE", "EMESSAGE"].includes(code)) return "permanent";
@@ -154,7 +176,8 @@
 
 // async function markSent(job) {
 //   await OutboundJob.updateOne(
-//     { _id: job._id },
+//     // Agar Meta ka delivery-failed webhook pehle aa gaya, to use "sent" se overwrite mat karo
+//     { _id: job._id, deliveryFailed: { $ne: true } },
 //     {
 //       $set: {
 //         status: "sent",
@@ -250,7 +273,9 @@
 //     await Notification.create({ userId: ownerId, ...payload });
 //     emitToUser(ownerId, "notification:new", {});
 //   } catch (err) {
-//     logger.warn("[queue] Could not create notification", { error: err.message });
+//     logger.warn("[queue] Could not create notification", {
+//       error: err.message,
+//     });
 //   }
 // }
 
@@ -338,7 +363,10 @@
 //   }
 
 //   const campaign = job.campaignId
-//     ? await Campaign.findOne({ _id: job.campaignId, ownerId: job.ownerId }).lean()
+//     ? await Campaign.findOne({
+//         _id: job.campaignId,
+//         ownerId: job.ownerId,
+//       }).lean()
 //     : null;
 //   const template = campaign?.whatsappTemplate?.name
 //     ? {
@@ -402,7 +430,9 @@
 //     return;
 //   }
 
-//   const campaign = job.campaignId ? await Campaign.findById(job.campaignId).lean() : null;
+//   const campaign = job.campaignId
+//     ? await Campaign.findById(job.campaignId).lean()
+//     : null;
 //   if (!campaign || !campaign.email?.subject || !campaign.email?.body) {
 //     await markFailed(job, null, "Campaign ka email subject/body missing hai");
 //     return;
@@ -418,7 +448,17 @@
 //     await markCancelled(job, "Campaign email cancelled");
 //     return;
 //   }
-//   if (tracked && ["sent", "delivered", "delivery_delayed", "bounced", "complained", "suppressed"].includes(tracked.status)) {
+//   if (
+//     tracked &&
+//     [
+//       "sent",
+//       "delivered",
+//       "delivery_delayed",
+//       "bounced",
+//       "complained",
+//       "suppressed",
+//     ].includes(tracked.status)
+//   ) {
 //     // Provider already accepted this idempotent job. Don't send it again after
 //     // a worker restart/webhook race.
 //     await markSent(job);
@@ -467,7 +507,9 @@
 //       ],
 //       vars: {
 //         name: lead.name,
-//         firstName: String(lead.name || "").trim().split(/\s+/)[0],
+//         firstName: String(lead.name || "")
+//           .trim()
+//           .split(/\s+/)[0],
 //         phone: lead.phone || "",
 //         city: lead.city || "",
 //         company: settings.companyName || "",
@@ -477,7 +519,14 @@
 //     // Do not overwrite a faster delivery webhook (delivered/bounced/etc).
 //     await EmailMessage.updateOne(
 //       { _id: tracked._id },
-//       { $set: { providerMessageId: sent.providerMessageId, rfcMessageId: sent.rfcMessageId || sent.providerMessageId, sentAt: tracked.sentAt || new Date(), from: getFromAddress() || tracked.from } },
+//       {
+//         $set: {
+//           providerMessageId: sent.providerMessageId,
+//           rfcMessageId: sent.rfcMessageId || sent.providerMessageId,
+//           sentAt: tracked.sentAt || new Date(),
+//           from: getFromAddress() || tracked.from,
+//         },
+//       },
 //     );
 //     await EmailMessage.updateOne(
 //       { _id: tracked._id, status: { $in: ["queued", "sending"] } },
@@ -487,8 +536,21 @@
 //   } catch (err) {
 //     await EmailMessage.updateOne(
 //       { _id: tracked._id, status: { $in: ["queued", "sending"] } },
-//       { $set: { status: "failed", errorCode: String(err.code || "EMAIL_SEND_FAILED"), errorMessage: String(err.message || "Email send failed").slice(0, 500) } },
-//     ).catch((saveErr) => logger.error("[email] Could not persist failed send", { error: saveErr.message }));
+//       {
+//         $set: {
+//           status: "failed",
+//           errorCode: String(err.code || "EMAIL_SEND_FAILED"),
+//           errorMessage: String(err.message || "Email send failed").slice(
+//             0,
+//             500,
+//           ),
+//         },
+//       },
+//     ).catch((saveErr) =>
+//       logger.error("[email] Could not persist failed send", {
+//         error: saveErr.message,
+//       }),
+//     );
 //     throw err;
 //   }
 // }
@@ -651,6 +713,7 @@ const {
 } = require("./outboundQueue");
 const { emitToUser } = require("../../sockets");
 const logger = require("../../utils/logger");
+const deliveryHealth = require("../whatsapp/deliveryHealth");
 
 /**
  * Bulk outreach worker (WhatsApp + Email).
@@ -684,6 +747,9 @@ const PAUSE_MS = {
   rate_limit: 60 * 1000,
   fatal_pause: 10 * 60 * 1000,
   quota: 60 * 60 * 1000,
+  // 131048: Meta ne spam rate limit lagaya — ye minutes mein theek nahi hota.
+  // Turant dobara bhejne se number ki quality aur giregi.
+  spam_hold: 6 * 60 * 60 * 1000,
 };
 const RETRY_BACKOFF_MS = [60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000];
 const RECOVER_EVERY_MS = 60 * 1000;
@@ -696,12 +762,15 @@ const FATAL_PAUSE_CODES = new Set([
   "10", // permission denied
   "131042", // payment / business eligibility problem
   "131031", // account locked
-  "131048", // spam rate limit hit
   "133010", // phone number not registered
   "META_NOT_CONFIGURED",
   "OPENING_TEMPLATE_MISSING",
 ]);
+const SPAM_HOLD_CODES = new Set(["131048"]); // spam rate limit hit
 const TEMP_RETRY_CODES = new Set(["131000", "131016", "131057"]);
+// Recipient-level problems: retry mat karo, lead par yaad rakho
+// (131026 undeliverable, 131049 per-user marketing limit, 131050 marketing opt-out)
+const RECIPIENT_CODES = new Set(["131026", "131049", "131050"]);
 const NETWORK_ERROR_CODES = new Set([
   "ECONNABORTED",
   "ETIMEDOUT",
@@ -730,6 +799,8 @@ function classifyWhatsAppError(err) {
   const code = String(err?.metaError?.code ?? err?.code ?? "");
   const status = err?.response?.status;
 
+  if (RECIPIENT_CODES.has(code)) return "recipient";
+  if (SPAM_HOLD_CODES.has(code)) return "spam_hold";
   if (RATE_LIMIT_CODES.has(code) || status === 429) return "rate_limit";
   if (FATAL_PAUSE_CODES.has(code)) return "fatal_pause";
   if (TEMP_RETRY_CODES.has(code)) return "retry";
@@ -806,8 +877,7 @@ async function claimNext(channels) {
 
 async function markSent(job) {
   await OutboundJob.updateOne(
-    // Agar Meta ka delivery-failed webhook pehle aa gaya, to use "sent" se overwrite mat karo
-    { _id: job._id, deliveryFailed: { $ne: true } },
+    { _id: job._id },
     {
       $set: {
         status: "sent",
@@ -838,6 +908,22 @@ async function markCancelled(job, reason) {
   await OutboundJob.updateOne(
     { _id: job._id },
     { $set: { status: "cancelled", lockedAt: null, lastError: reason } },
+  );
+}
+
+/** Deliverability guard ne skip kiya: cancelled + reason code (UI mein dikhane ke liye) */
+async function markSkipped(job, block) {
+  await OutboundJob.updateOne(
+    { _id: job._id },
+    {
+      $set: {
+        status: "cancelled",
+        lockedAt: null,
+        lastError: `Skipped: ${block.reason}`,
+        lastErrorCode: block.code,
+      },
+      $inc: { attempts: -1 },
+    },
   );
 }
 
@@ -961,6 +1047,19 @@ async function checkCompletion(job, stats) {
 async function notifyPause(job, err, channel, kind) {
   // 10 min mein ek hi baar per channel, warna notification spam ho jayega
   if (Date.now() - lastPauseNotifyAt[channel] < PAUSE_MS.fatal_pause) return;
+  if (kind === "spam_hold") {
+    lastPauseNotifyAt[channel] = Date.now();
+    await notify(job.ownerId, {
+      type: "whatsapp_send_failed",
+      title: "Bulk WhatsApp 6 ghante ke liye roka — Meta spam limit (131048)",
+      body:
+        "Meta ne aapke number par spam rate limit lagaya hai. Ye tab hota hai jab bahut log " +
+        "block/report karte hain ya message ignore karte hain. Jobs safe hain. Contact list " +
+        "saaf karo (sirf opt-in leads), template mein 'Stop' button rakho aur volume kam karo.",
+      link: "/outreach/whatsapp",
+    });
+    return;
+  }
   lastPauseNotifyAt[channel] = Date.now();
 
   const minutes = Math.round(PAUSE_MS[kind] / 60000);
@@ -998,16 +1097,26 @@ async function processWhatsApp(job, lead) {
         ownerId: job.ownerId,
       }).lean()
     : null;
+  if (campaign?.status === "cancelled") {
+    await markCancelled(job, "Campaign cancel ho gaya");
+    return;
+  }
+
+  // Pre-send guard: invalid number / marketing cooldown / opt-out wale lead ko
+  // Meta tak bhejna hi mat — paisa aur number ki quality dono bachti hai.
+  const category = campaign?.whatsappTemplate?.category || "";
+  const block = deliveryHealth.getWhatsAppBlock(lead, category);
+  if (block) {
+    await markSkipped(job, block);
+    return;
+  }
+
   const template = campaign?.whatsappTemplate?.name
     ? {
         name: campaign.whatsappTemplate.name,
         language: campaign.whatsappTemplate.language,
         variables: campaign.whatsappTemplate.variables || [],
         headerImageUrl: campaign.whatsappTemplate.headerImageUrl || "",
-        body: campaign.whatsappTemplate.body || "",
-        header: campaign.whatsappTemplate.header || "",
-        footer: campaign.whatsappTemplate.footer || "",
-        buttons: campaign.whatsappTemplate.buttons || [],
       }
     : null;
 
@@ -1125,7 +1234,6 @@ async function processEmail(job, lead) {
       to: lead.email,
       subject: campaign.email.subject,
       body: campaign.email.body,
-      imageUrl: campaign.email.imageUrl || "",
       companyName: settings.companyName || "",
       replyTo: makeReplyAddress(tracked.trackingId),
       idempotencyKey: `propai-campaign-${job._id}`,
@@ -1206,6 +1314,24 @@ async function handleError(job, err, channel) {
   const kind =
     channel === "email" ? classifyEmailError(err) : classifyWhatsAppError(err);
 
+  if (kind === "recipient") {
+    // Sync 131026/131049/131050: is lead ke liye permanent fail, lead par yaad rakho
+    let category = "";
+    if (job.campaignId) {
+      const c = await Campaign.findById(job.campaignId, {
+        whatsappTemplate: 1,
+      }).lean();
+      category = c?.whatsappTemplate?.category || "";
+    }
+    await deliveryHealth.recordFailure(job.leadId, errCode(err), { category });
+    await markFailed(
+      job,
+      err,
+      deliveryHealth.REASON_TEXT[errCode(err)] || shortError(err),
+    );
+    return;
+  }
+
   if (PAUSE_MS[kind]) {
     pausedUntil[channel] = Date.now() + PAUSE_MS[kind];
     logger.warn(
@@ -1250,7 +1376,11 @@ async function loop() {
 
       // Jo channels abhi paused nahi hain, sirf unhi ke jobs uthao
       const now = Date.now();
-      const allowed = CHANNELS.filter((ch) => now >= pausedUntil[ch]);
+      // Delivery circuit breaker / quality FLAGGED hold bhi WhatsApp rokta hai
+      const waHold = deliveryHealth.getWhatsAppHold();
+      const allowed = CHANNELS.filter(
+        (ch) => now >= pausedUntil[ch] && !(ch === "whatsapp" && waHold),
+      );
       if (!allowed.length) {
         await sleep(IDLE_POLL_MS);
         continue;

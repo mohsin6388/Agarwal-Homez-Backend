@@ -69,6 +69,17 @@
 
 //     lastError: { type: String, default: null },
 //     lastErrorCode: { type: String, default: null },
+
+//     // Meta webhook se aaya delivery-time failure (message accept hua, par
+//     // deliver nahi hua). Details: services/queue/deliveryFailures.js
+//     deliveryFailed: { type: Boolean, default: false },
+//     deliveryFailedAt: { type: Date, default: null },
+//     deliveryErrorCode: { type: String, default: null },
+//     // false = is number par dobara bhejne ka fayda nahi (131026, 130472)
+//     retryable: { type: Boolean, default: true },
+//     // Is time ke baad hi dobara bheja ja sakta hai (Meta cooldown)
+//     retryAfter: { type: Date, default: null },
+//     deliveryRetryCount: { type: Number, default: 0 },
 //   },
 //   { timestamps: true },
 // );
@@ -78,6 +89,8 @@
 // // Batch / campaign progress ke liye
 // outboundJobSchema.index({ batchId: 1, status: 1 });
 // outboundJobSchema.index({ campaignId: 1, channel: 1, status: 1 });
+// // Delivery-failure popup / summary
+// outboundJobSchema.index({ campaignId: 1, deliveryFailed: 1, retryAfter: 1 });
 // // Outreach page ki list (owner + channel, schedule order)
 // outboundJobSchema.index({ ownerId: 1, channel: 1, scheduledFor: 1, seq: 1 });
 
@@ -155,16 +168,16 @@ const outboundJobSchema = new Schema(
     lastError: { type: String, default: null },
     lastErrorCode: { type: String, default: null },
 
-    // Meta webhook se aaya delivery-time failure (message accept hua, par
-    // deliver nahi hua). Details: services/queue/deliveryFailures.js
-    deliveryFailed: { type: Boolean, default: false },
-    deliveryFailedAt: { type: Date, default: null },
+    // Meta "sent" ke baad async webhook se aata hai: delivered / read / failed.
+    // status=sent ka matlab sirf "Meta ne accept kiya" — asli delivery ye hai.
+    deliveryStatus: {
+      type: String,
+      enum: [null, "delivered", "read", "failed"],
+      default: null,
+    },
     deliveryErrorCode: { type: String, default: null },
-    // false = is number par dobara bhejne ka fayda nahi (131026, 130472)
-    retryable: { type: Boolean, default: true },
-    // Is time ke baad hi dobara bheja ja sakta hai (Meta cooldown)
-    retryAfter: { type: Date, default: null },
-    deliveryRetryCount: { type: Number, default: 0 },
+    deliveryError: { type: String, default: null },
+    deliveryUpdatedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
@@ -174,8 +187,6 @@ outboundJobSchema.index({ status: 1, channel: 1, nextRunAt: 1 });
 // Batch / campaign progress ke liye
 outboundJobSchema.index({ batchId: 1, status: 1 });
 outboundJobSchema.index({ campaignId: 1, channel: 1, status: 1 });
-// Delivery-failure popup / summary
-outboundJobSchema.index({ campaignId: 1, deliveryFailed: 1, retryAfter: 1 });
 // Outreach page ki list (owner + channel, schedule order)
 outboundJobSchema.index({ ownerId: 1, channel: 1, scheduledFor: 1, seq: 1 });
 

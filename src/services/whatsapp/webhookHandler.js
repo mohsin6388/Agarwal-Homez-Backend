@@ -7,6 +7,7 @@
 // const { emitToUser } = require("../../sockets");
 // const conversationEngine = require("../ai/conversationEngine");
 // const env = require("../../config/env");
+// const { applyDeliveryFailure } = require("../queue/deliveryFailures");
 
 // /**
 //  * Real Meta WhatsApp Cloud API "messages" webhook body:
@@ -350,7 +351,7 @@
 //               : null;
 //             if (mappedStatus && s.id) {
 //               const firstError = Array.isArray(s.errors) ? s.errors[0] : null;
-//               await Message.updateOne(
+//               const updatedMessage = await Message.findOneAndUpdate(
 //                 { whatsappMessageId: s.id },
 //                 {
 //                   $set: {
@@ -362,7 +363,26 @@
 //                       firstError?.title || firstError?.message || null,
 //                   },
 //                 },
-//               );
+//                 { new: true },
+//               )
+//                 .select("outboundJobId")
+//                 .lean();
+
+//               // Bulk campaign ka message tha? To Outreach job ko bhi "failed"
+//               // mark karo, taaki Failed filter / campaign card mein dikhe.
+//               if (mappedStatus === "failed" && updatedMessage?.outboundJobId) {
+//                 try {
+//                   await applyDeliveryFailure({
+//                     jobId: updatedMessage.outboundJobId,
+//                     error: firstError,
+//                   });
+//                 } catch (jobErr) {
+//                   logger.error(
+//                     "[whatsapp] Could not mark outreach job as delivery-failed",
+//                     { error: jobErr.message, messageId: s.id },
+//                   );
+//                 }
+//               }
 //             }
 //             if (s.status === "failed") {
 //               logger.warn("[whatsapp] Outbound message delivery failed", {
@@ -409,7 +429,7 @@ const logger = require("../../utils/logger");
 const { emitToUser } = require("../../sockets");
 const conversationEngine = require("../ai/conversationEngine");
 const env = require("../../config/env");
-const { applyDeliveryFailure } = require("../queue/deliveryFailures");
+const deliveryHealth = require("./deliveryHealth");
 
 /**
  * Real Meta WhatsApp Cloud API "messages" webhook body:
@@ -681,6 +701,20 @@ async function handleInboundMessage(waMessage, contact) {
     timestamp,
   });
 
+  // User ne khud message kiya => number WhatsApp par zinda hai.
+  await deliveryHealth.recordReachable(lead._id);
+  // "STOP" / "not interested" jaisa chhota reply => marketing opt-out
+  // (AI conversation chalti rahegi, sirf bulk marketing band hogi).
+  // "START" => wapas opt-in.
+  if (deliveryHealth.isOptOutText(rawText)) {
+    await deliveryHealth.setMarketingOptOut({ lead }, true);
+    logger.info(
+      `[wa-health] Lead ${lead._id} ne marketing opt-out kiya (STOP reply)`,
+    );
+  } else if (/^\s*(start|resume|subscribe)\s*$/i.test(String(rawText || ""))) {
+    await deliveryHealth.setMarketingOptOut({ lead }, false);
+  }
+
   conversation.lastMessageAt = savedMessage.timestamp;
   conversation.lastInboundAt = savedMessage.timestamp;
   conversation.unreadCount += 1;
@@ -735,12 +769,46 @@ async function handleWebhook(payload) {
     for (const entry of entries) {
       const changes = Array.isArray(entry.changes) ? entry.changes : [];
       for (const change of changes) {
-        if (change.field !== "messages") continue; // ignore non-message webhook fields
         const value = change.value || {};
 
+        // Meta ne number FLAGGED / DOWNGRADE kiya => bulk WhatsApp hold
+        if (change.field === "phone_number_quality_update") {
+          const owners = await User.find(
+            { isActive: { $ne: false } },
+            { _id: 1 },
+          )
+            .lean()
+            .catch(() => []);
+          await deliveryHealth.handleQualityUpdate(
+            value,
+            owners.map((u) => u._id),
+          );
+          continue;
+        }
+
+        // User ne WhatsApp ke andar "Stop promotions" dabaya (ya resume kiya)
+        if (change.field === "user_preferences") {
+          const prefs = Array.isArray(value.user_preferences)
+            ? value.user_preferences
+            : [];
+          for (const p of prefs) {
+            if (p?.category && p.category !== "marketing_messages") continue;
+            const lead = await findLeadByPhone(normalizePhone(p?.wa_id));
+            if (!lead) continue;
+            const optOut = String(p?.value || "").toLowerCase() === "stop";
+            await deliveryHealth.setMarketingOptOut({ lead }, optOut);
+            logger.info(
+              `[wa-health] user_preferences: lead ${lead._id} marketing ${optOut ? "STOP" : "RESUME"}`,
+            );
+          }
+          continue;
+        }
+
+        if (change.field !== "messages") continue; // ignore other webhook fields
+
         // Status callbacks (sent/delivered/read/failed for OUR outbound
-        // messages) land here too, under `statuses` instead of `messages` —
-        // nothing to do with them yet, just don't treat them as inbound text.
+        // messages) land here too, under `statuses` instead of `messages`.
+        // Failed => lead par 131026/131049/131050 yaad rakho + job update.
         if (Array.isArray(value.statuses) && value.statuses.length) {
           for (const s of value.statuses) {
             const mappedStatus = [
@@ -751,9 +819,10 @@ async function handleWebhook(payload) {
             ].includes(s.status)
               ? s.status
               : null;
-            if (mappedStatus && s.id) {
-              const firstError = Array.isArray(s.errors) ? s.errors[0] : null;
-              const updatedMessage = await Message.findOneAndUpdate(
+            if (!mappedStatus || !s.id) continue;
+            const firstError = Array.isArray(s.errors) ? s.errors[0] : null;
+            try {
+              const message = await Message.findOneAndUpdate(
                 { whatsappMessageId: s.id },
                 {
                   $set: {
@@ -766,25 +835,19 @@ async function handleWebhook(payload) {
                   },
                 },
                 { new: true },
-              )
-                .select("outboundJobId")
-                .lean();
-
-              // Bulk campaign ka message tha? To Outreach job ko bhi "failed"
-              // mark karo, taaki Failed filter / campaign card mein dikhe.
-              if (mappedStatus === "failed" && updatedMessage?.outboundJobId) {
-                try {
-                  await applyDeliveryFailure({
-                    jobId: updatedMessage.outboundJobId,
-                    error: firstError,
-                  });
-                } catch (jobErr) {
-                  logger.error(
-                    "[whatsapp] Could not mark outreach job as delivery-failed",
-                    { error: jobErr.message, messageId: s.id },
-                  );
-                }
+              ).lean();
+              if (mappedStatus !== "sent") {
+                await deliveryHealth.applyStatus(
+                  message,
+                  mappedStatus,
+                  firstError,
+                );
               }
+            } catch (statusErr) {
+              logger.warn("[whatsapp] Could not apply status update", {
+                messageId: s.id,
+                error: statusErr.message,
+              });
             }
             if (s.status === "failed") {
               logger.warn("[whatsapp] Outbound message delivery failed", {

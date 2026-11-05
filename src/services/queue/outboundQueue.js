@@ -5,6 +5,7 @@
 // const OutboundJob = require("../../models/OutboundJob");
 // const Campaign = require("../../models/Campaign");
 // const { getFromAddress } = require("../email/mailer");
+// const { summarizeForCampaigns } = require("./deliveryFailures");
 
 // const STATUSES = [
 //   "pending",
@@ -346,9 +347,19 @@
 //     );
 //   }
 
+//   const deliveryById = await summarizeForCampaigns(campaigns.map((c) => c._id));
+
 //   return campaigns.map((c) => ({
 //     ...c,
 //     stats: statsById.get(String(c._id)) || emptyByChannel(),
+//     // Meta webhook se aaye delivery failures (WhatsApp) — card ka failed box
+//     deliveryFailure: deliveryById.get(String(c._id)) || {
+//       total: 0,
+//       ready: 0,
+//       waiting: 0,
+//       blocked: 0,
+//       nextReadyAt: null,
+//     },
 //   }));
 // }
 
@@ -433,6 +444,11 @@
 //       nextRunAt: j.nextRunAt,
 //       sentAt: j.sentAt,
 //       lastError: j.lastError,
+//       deliveryFailed: Boolean(j.deliveryFailed),
+//       errorCode: j.deliveryErrorCode || j.lastErrorCode || null,
+//       retryable: j.deliveryFailed ? Boolean(j.retryable) : null,
+//       retryAfter: j.deliveryFailed ? j.retryAfter : null,
+//       deliveryRetryCount: j.deliveryRetryCount || 0,
 //     })),
 //     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
 //   };
@@ -495,7 +511,13 @@
 //   const campaign = await findCampaign(ownerId, campaignId);
 //   if (!campaign) return null;
 
-//   const filter = { campaignId: campaign._id, status: "failed" };
+//   // Meta delivery failures (131026 etc.) yahan se retry nahi hote — unka
+//   // cooldown/rules alag hain, wo "Failed delivery" popup se resend hote hain.
+//   const filter = {
+//     campaignId: campaign._id,
+//     status: "failed",
+//     deliveryFailed: { $ne: true },
+//   };
 //   if (channel) filter.channel = channel;
 
 //   const res = await OutboundJob.updateMany(filter, {
@@ -558,7 +580,6 @@ const mongoose = require("mongoose");
 const OutboundJob = require("../../models/OutboundJob");
 const Campaign = require("../../models/Campaign");
 const { getFromAddress } = require("../email/mailer");
-const { summarizeForCampaigns } = require("./deliveryFailures");
 
 const STATUSES = [
   "pending",
@@ -865,7 +886,7 @@ async function scheduleCampaignJobs({ campaign, leads }) {
 
 /** Owner ke recent campaigns + har ek ka channel-wise progress */
 async function listCampaigns(ownerId, { limit = 20 } = {}) {
-  const campaigns = await Campaign.find({ ownerId, deletedAt: null })
+  const campaigns = await Campaign.find({ ownerId })
     .sort({ createdAt: -1 })
     .limit(limit)
     .lean();
@@ -900,19 +921,9 @@ async function listCampaigns(ownerId, { limit = 20 } = {}) {
     );
   }
 
-  const deliveryById = await summarizeForCampaigns(campaigns.map((c) => c._id));
-
   return campaigns.map((c) => ({
     ...c,
     stats: statsById.get(String(c._id)) || emptyByChannel(),
-    // Meta webhook se aaye delivery failures (WhatsApp) — card ka failed box
-    deliveryFailure: deliveryById.get(String(c._id)) || {
-      total: 0,
-      ready: 0,
-      waiting: 0,
-      blocked: 0,
-      nextReadyAt: null,
-    },
   }));
 }
 
@@ -925,37 +936,7 @@ async function listJobs(
   ownerId,
   { channel, campaignId, status, page = 1, limit = 50 } = {},
 ) {
-  const ownerObjectId = oid(ownerId);
-  const filter = { ownerId: ownerObjectId };
-
-  // Legacy cleanup: hide/remove rows left behind by deleted contacts or campaigns.
-  // Contact records remain untouched when only a campaign is removed.
-  const [deletedCampaigns, validLeadIds] = await Promise.all([
-    Campaign.find({ ownerId: ownerObjectId, deletedAt: { $ne: null } })
-      .select("_id")
-      .lean(),
-    require("../../models/Lead").distinct("_id", { ownerId: ownerObjectId }),
-  ]);
-  const deletedCampaignIds = deletedCampaigns.map((campaign) => campaign._id);
-  if (deletedCampaignIds.length) {
-    await OutboundJob.deleteMany({
-      ownerId: ownerObjectId,
-      campaignId: { $in: deletedCampaignIds },
-    });
-    await EmailMessage.deleteMany({
-      ownerId: ownerObjectId,
-      campaignId: { $in: deletedCampaignIds },
-    });
-  }
-  await OutboundJob.deleteMany({
-    ownerId: ownerObjectId,
-    leadId: { $nin: validLeadIds },
-  });
-  await EmailMessage.deleteMany({
-    ownerId: ownerObjectId,
-    leadId: { $nin: validLeadIds, $ne: null },
-  });
-
+  const filter = { ownerId: oid(ownerId) };
   if (channel) filter.channel = channel;
   if (campaignId) filter.campaignId = oid(campaignId);
 
@@ -972,7 +953,7 @@ async function listJobs(
 
   const [jobs, total] = await Promise.all([
     OutboundJob.find(filter)
-      .sort({ sentAt: -1, updatedAt: -1, createdAt: -1, seq: 1 })
+      .sort({ scheduledFor: 1, seq: 1, priority: 1 })
       .skip((page - 1) * limit)
       .limit(limit)
       .populate("leadId", "name phone email")
@@ -997,11 +978,6 @@ async function listJobs(
       nextRunAt: j.nextRunAt,
       sentAt: j.sentAt,
       lastError: j.lastError,
-      deliveryFailed: Boolean(j.deliveryFailed),
-      errorCode: j.deliveryErrorCode || j.lastErrorCode || null,
-      retryable: j.deliveryFailed ? Boolean(j.retryable) : null,
-      retryAfter: j.deliveryFailed ? j.retryAfter : null,
-      deliveryRetryCount: j.deliveryRetryCount || 0,
     })),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
@@ -1064,12 +1040,13 @@ async function retryFailed(ownerId, campaignId, channel) {
   const campaign = await findCampaign(ownerId, campaignId);
   if (!campaign) return null;
 
-  // Meta delivery failures (131026 etc.) yahan se retry nahi hote — unka
-  // cooldown/rules alag hain, wo "Failed delivery" popup se resend hote hain.
+  // 131026 (WhatsApp par nahi) aur 131050 (opt-out) ko retry karna bekaar hai
+  // aur number ki quality girata hai. 131049 wale retry ho sakte hain — worker
+  // ka deliverability guard cooldown khatam hone tak unhe khud skip kar dega.
   const filter = {
     campaignId: campaign._id,
     status: "failed",
-    deliveryFailed: { $ne: true },
+    lastErrorCode: { $nin: ["131026", "131050"] },
   };
   if (channel) filter.channel = channel;
 
