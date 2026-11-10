@@ -7,6 +7,7 @@
 // const OutboundJob = require("../models/OutboundJob");
 // const { launchCampaign } = require("../services/campaign/campaignService");
 // const queue = require("../services/queue/outboundQueue");
+// const deliveryFailures = require("../services/queue/deliveryFailures");
 // const { emitToUser } = require("../sockets");
 
 // /** POST /api/campaigns/launch */
@@ -172,7 +173,52 @@
 //   return new ApiResponse(200, data).send(res);
 // });
 
+// /** GET /api/campaigns/:id/delivery-failures — Meta webhook se failed contacts + timer */
+// const deliveryFailuresList = asyncHandler(async (req, res) => {
+//   const data = await deliveryFailures.getFailureDetails(
+//     req.user.id,
+//     req.params.id,
+//   );
+//   if (!data) throw ApiError.notFound("Campaign not found");
+//   return new ApiResponse(200, data).send(res);
+// });
+
+// /** POST /api/campaigns/:id/retry-delivery-failed — sirf "ready" contacts dobara bhejo */
+// const retryDeliveryFailed = asyncHandler(async (req, res) => {
+//   const result = await deliveryFailures.retryReadyFailures(
+//     req.user.id,
+//     req.params.id,
+//   );
+//   if (!result) throw ApiError.notFound("Campaign not found");
+
+//   if (result.reason === "campaign_cancelled") {
+//     throw ApiError.badRequest(
+//       "Campaign cancel ho chuki hai, resend nahi ho sakta.",
+//     );
+//   }
+
+//   const stats = await queue.getCampaignStats(result.campaign._id);
+//   emitToUser(req.user.id, "outreach:campaign", {
+//     campaignId: String(result.campaign._id),
+//     status: result.campaign.status,
+//   });
+//   emitToUser(req.user.id, "outreach:progress", {
+//     campaignId: String(result.campaign._id),
+//     stats,
+//   });
+
+//   return new ApiResponse(
+//     200,
+//     { requeued: result.requeued, stats },
+//     result.requeued
+//       ? `${result.requeued} contact(s) dobara bhejne ke liye queue mein daal diye`
+//       : "Abhi koi contact ready nahi hai",
+//   ).send(res);
+// });
+
 // module.exports = {
+//   deliveryFailuresList,
+//   retryDeliveryFailed,
 //   launch,
 //   list,
 //   getOne,
@@ -195,6 +241,7 @@ const OutboundJob = require("../models/OutboundJob");
 const { launchCampaign } = require("../services/campaign/campaignService");
 const queue = require("../services/queue/outboundQueue");
 const deliveryFailures = require("../services/queue/deliveryFailures");
+const contacted = require("../services/queue/contactedContacts");
 const { emitToUser } = require("../sockets");
 
 /** POST /api/campaigns/launch */
@@ -403,7 +450,32 @@ const retryDeliveryFailed = asyncHandler(async (req, res) => {
   ).send(res);
 });
 
+/**
+ * GET /api/campaigns/contacted/summary
+ * WhatsApp campaigns me jin contacts ko message ja chuka hai: kitne gaye, kitne
+ * failed, failed me se kitne baad me ja sakte hain / kabhi nahi ja sakte.
+ */
+const contactedSummary = asyncHandler(async (req, res) => {
+  const data = await contacted.getSummary(req.user.id);
+  return new ApiResponse(200, data).send(res);
+});
+
+/**
+ * GET /api/campaigns/contacted?group=&search=&page=&limit=&idsOnly=
+ * group: all | sent | delivered | awaiting | failed | retry_later | cannot_send | queued
+ */
+const contactedList = asyncHandler(async (req, res) => {
+  const { idsOnly, ...opts } = req.query;
+  const data = await contacted.listContacted(req.user.id, {
+    ...opts,
+    idsOnly: ["1", "true"].includes(String(idsOnly || "")),
+  });
+  return new ApiResponse(200, data).send(res);
+});
+
 module.exports = {
+  contactedSummary,
+  contactedList,
   deliveryFailuresList,
   retryDeliveryFailed,
   launch,
