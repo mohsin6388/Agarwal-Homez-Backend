@@ -436,7 +436,35 @@ async function applyStatus(message, status, firstError) {
       deliveryErrorCode: job.deliveryErrorCode,
       deliveryError: job.deliveryError,
     });
+    // Campaign card (sent / failed counts + failed box) live update
+    if (job.campaignId) scheduleCampaignRefresh(ownerId, job.campaignId);
   }
+}
+
+// Webhooks bursts me aate hain (200 messages = 200+ statuses). Har campaign ke
+// liye 2 sec me ek hi baar stats nikal kar bhejo.
+const campaignRefreshTimers = new Map();
+function scheduleCampaignRefresh(ownerId, campaignId) {
+  const key = String(campaignId);
+  if (campaignRefreshTimers.has(key)) return;
+  const timer = setTimeout(async () => {
+    campaignRefreshTimers.delete(key);
+    try {
+      const { getCampaignStats } = require("../queue/outboundQueue");
+      const stats = await getCampaignStats(campaignId);
+      emitToUser(ownerId, "outreach:progress", { campaignId: key, stats });
+      emitToUser(ownerId, "outreach:campaign", {
+        campaignId: key,
+        deliveryUpdate: true,
+      });
+    } catch (err) {
+      logger.warn("[delivery] Campaign refresh emit failed", {
+        error: err.message,
+      });
+    }
+  }, 2000);
+  if (typeof timer.unref === "function") timer.unref();
+  campaignRefreshTimers.set(key, timer);
 }
 
 module.exports = {

@@ -11,5 +11,8 @@ router.use(authenticate, roleGuard("broker", "admin"));
 
 router.get("/summary", c.summary);
 router.get("/jobs", validate(listJobsQuerySchema), c.jobs);
+// Manual / No campaign (campaignId: null) jobs
+router.get("/manual-jobs", c.manualJobs);
+router.post("/manual-jobs/stop", c.stopManualJobs);
 
 module.exports = router;

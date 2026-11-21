@@ -98,31 +98,39 @@ const {
       }
     }
 
-    // Retry any lead whose opening template failed while the server was down
-    // or Meta was temporarily unavailable. startConversation() is idempotent.
-    try {
-      const User = require("./src/models/User");
-      const owners = await User.find({
-        role: { $in: ["broker", "admin"] },
-        isActive: true,
-      })
-        .select("_id")
-        .lean();
-      for (const owner of owners) {
-        conversationEngine
-          .catchUpPendingConversations(owner._id)
-          .catch((err) =>
-            logger.error(
-              `[server] Pending WhatsApp auto-start failed for owner ${owner._id}`,
-              { error: err.message },
-            ),
-          );
+    // Boot catch-up sweep: OFF by default. Pehle yeh har restart par
+    // bina campaign ke (campaignId: null) WhatsApp templates queue kar deta tha.
+    // WhatsApp ab sirf campaign launch ya dashboard ke "Start" se jata hai.
+    // Dobara chalana ho to .env me CATCHUP_ON_BOOT=true set karein.
+    if (process.env.CATCHUP_ON_BOOT !== "true") {
+      logger.info("[server] Boot catch-up sweep is DISABLED");
+    } else
+      try {
+        const User = require("./src/models/User");
+        const owners = await User.find({
+          role: { $in: ["broker", "admin"] },
+          isActive: true,
+        })
+          .select("_id")
+          .lean();
+        for (const owner of owners) {
+          conversationEngine
+            .catchUpPendingConversations(owner._id)
+            .catch((err) =>
+              logger.error(
+                `[server] Pending WhatsApp auto-start failed for owner ${owner._id}`,
+                { error: err.message },
+              ),
+            );
+        }
+      } catch (err) {
+        logger.warn(
+          "[server] Could not run pending WhatsApp auto-start sweep",
+          {
+            error: err.message,
+          },
+        );
       }
-    } catch (err) {
-      logger.warn("[server] Could not run pending WhatsApp auto-start sweep", {
-        error: err.message,
-      });
-    }
   });
 
   startDailyReportScheduler();

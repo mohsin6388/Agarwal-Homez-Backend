@@ -107,6 +107,10 @@ async function importLeadRows(ownerId, rows) {
     if (phone) seenPhones.add(phone);
     if (email) seenEmails.add(email);
     const row = item.row;
+    const fileName =
+      String(row.importFile || "")
+        .trim()
+        .slice(0, 200) || null;
     docs.push({
       ownerId,
       name: fallbackName({ ...row, email }, phone),
@@ -116,10 +120,8 @@ async function importLeadRows(ownerId, rows) {
       location: row.location || undefined,
       address: row.address || undefined,
       jobTitle: row.jobTitle || undefined,
-      importFile:
-        String(row.importFile || "")
-          .trim()
-          .slice(0, 200) || null,
+      importFile: fileName,
+      importFiles: fileName ? [fileName] : [],
       budgetMin: row.budgetMin ?? null,
       budgetMax: row.budgetMax ?? null,
       occupation: row.occupation || undefined,
@@ -135,6 +137,20 @@ async function importLeadRows(ownerId, rows) {
           .slice(0, 1500) || undefined,
       requirements: row.requirements || undefined,
     });
+  }
+
+  // Jo contacts pehle se CRM me the, unpar bhi is sheet ka naam jod do — taaki
+  // sheet kholne par uske saare contacts dikhein (sirf ek tag add hota hai,
+  // baaki data nahi badalta).
+  const sheetName =
+    String(rows?.[0]?.importFile || "")
+      .trim()
+      .slice(0, 200) || null;
+  if (sheetName && existingIds.length) {
+    await Lead.updateMany(
+      { ownerId, _id: { $in: existingIds } },
+      { $addToSet: { importFiles: sheetName } },
+    );
   }
 
   if (!docs.length) return { inserted: [], skipped, invalid, existingIds };

@@ -1,14 +1,21 @@
-const { z } = require('zod');
+const { z } = require("zod");
 
-const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
+const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid id");
 
 const createAudienceSchema = z.object({
   body: z.object({
-    name: z.string().trim().min(1, 'Audience name required').max(120),
-    description: z.string().trim().max(300).optional().default(''),
-    tags: z.array(z.string().trim().min(1).max(40)).max(20).optional().default([]),
-    source: z.enum(['selection', 'upload', 'filter']).optional().default('selection'),
-    leadIds: z.array(objectId).min(1, 'Select at least one contact').max(20000),
+    name: z.string().trim().min(1, "Audience name required").max(120),
+    description: z.string().trim().max(300).optional().default(""),
+    tags: z
+      .array(z.string().trim().min(1).max(40))
+      .max(20)
+      .optional()
+      .default([]),
+    source: z
+      .enum(["selection", "upload", "filter"])
+      .optional()
+      .default("selection"),
+    leadIds: z.array(objectId).min(1, "Select at least one contact").max(20000),
   }),
 });
 
@@ -32,11 +39,18 @@ const listAudiencesSchema = z.object({
 const audienceLeadsSchema = z.object({
   params: z.object({ id: objectId }),
   query: z.object({
-    channel: z.enum(['whatsapp', 'email']).optional(),
-    excludeSent: z.enum(['0', '1', 'true', 'false']).optional(),
+    channel: z.enum(["whatsapp", "email"]).optional(),
+    excludeSent: z.enum(["0", "1", "true", "false"]).optional(),
+    details: z.enum(["0", "1", "true", "false"]).optional(),
   }),
 });
 
 const idParamSchema = z.object({ params: z.object({ id: objectId }) });
 
-module.exports = { createAudienceSchema, updateAudienceSchema, listAudiencesSchema, audienceLeadsSchema, idParamSchema };
+module.exports = {
+  createAudienceSchema,
+  updateAudienceSchema,
+  listAudiencesSchema,
+  audienceLeadsSchema,
+  idParamSchema,
+};

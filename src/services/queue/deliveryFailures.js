@@ -2,201 +2,152 @@ const mongoose = require("mongoose");
 const OutboundJob = require("../../models/OutboundJob");
 const Message = require("../../models/Message");
 const Campaign = require("../../models/Campaign");
-const { emitToUser } = require("../../sockets");
-const logger = require("../../utils/logger");
+const Lead = require("../../models/Lead");
+const contacted = require("./contactedContacts");
 
 /**
- * Meta delivery-time failures.
+ * Campaign ke failed WhatsApp contacts.
  *
- * Message Meta ko successfully chala jata hai (job = "sent"), phir Meta webhook
- * se batata hai ki deliver nahi hua (statuses[].status = "failed" + error code).
- * Ye file us webhook failure ko OutboundJob par laati hai, har error code ka
- * rule (retry ho sakta hai ya nahi, kitne ghante baad) decide karti hai, aur
- * "ready" contacts ko wapas queue mein daalti hai.
+ * Do tarah ke failure hote hain:
+ *  1. send   — Meta API ne bhejte waqt hi mana kar diya   → job.status = "failed"
+ *  2. meta   — Meta ne accept kiya ("sent"), phir webhook se bataya ki deliver
+ *              nahi hua                                    → job.status = "sent",
+ *                                                            job.deliveryStatus = "failed"
+ *
+ * Pehle ye file purane fields (deliveryFailed / retryable / retryAfter) padhti
+ * thi jo ab OutboundJob model me nahi hain — isliye campaign card par failures
+ * dikhte hi nahi the. Ab dono type `deliveryStatus` / `status` se gine jaate
+ * hain, aur retry ka rule wahi hai jo "Bheje gaye contacts" popup use karta hai
+ * (contactedContacts.classifyFailure: 131026 / 131049 / 131050 / 130472 ...).
  */
 
-const HOUR = 60 * 60 * 1000;
-
-// Ek job par max kitni baar delivery-failure ke baad dobara bhejenge.
-// Meta baar-baar retry karne par quality rating girata hai.
+// Ek job par max kitni baar resend. Meta baar-baar retry par quality girata hai.
 const MAX_DELIVERY_RETRIES = 2;
-
-const RULES = {
-  // Number WhatsApp par nahi hai / purana WhatsApp / nayi terms accept nahi ki
-  131026: {
-    retryable: false,
-    cooldownMs: 0,
-    label: "Number WhatsApp par nahi hai ya message undeliverable",
-  },
-  // Healthy ecosystem engagement — Meta ne marketing message roka
-  131049: {
-    retryable: true,
-    cooldownMs: 24 * HOUR,
-    label: "Meta ne marketing message roka (healthy ecosystem engagement)",
-  },
-  // User Meta ke experiment mein hai — marketing template nahi jayega
-  130472: {
-    retryable: false,
-    cooldownMs: 0,
-    label: "User Meta experiment mein hai — marketing template nahi jayega",
-  },
-};
-
-// Unknown delivery error: ek ghante baad ek baar try karne dete hain
-const DEFAULT_RULE = { retryable: true, cooldownMs: 1 * HOUR };
 
 const oid = (id) => new mongoose.Types.ObjectId(String(id));
 
-function classify(code, title) {
-  const rule = RULES[String(code)];
-  if (rule) return rule;
+/** Failed WhatsApp jobs (dono type) ka Mongo filter */
+function failedMatch(extra = {}) {
   return {
-    ...DEFAULT_RULE,
-    label: title ? String(title).slice(0, 200) : "WhatsApp delivery failed",
+    channel: "whatsapp",
+    ...extra,
+    $or: [{ status: "failed" }, { status: "sent", deliveryStatus: "failed" }],
   };
 }
 
-/** Mongo expressions (aggregation) jo ready / waiting ginte hain */
-function readyExpr(now) {
+const JOB_FIELDS =
+  "_id campaignId leadId status deliveryStatus deliveryErrorCode deliveryError deliveryUpdatedAt lastError lastErrorCode deliveryRetryCount sentAt updatedAt";
+
+/**
+ * Ek failed job → { kind, state, code, reason, retryAfter, retryable, retryCount }
+ * state: ready (abhi resend ho sakta) | waiting (cooldown) | blocked (kabhi nahi)
+ */
+function describe(job, lead, now = new Date()) {
+  const kind =
+    job.status === "sent" && job.deliveryStatus === "failed" ? "meta" : "send";
+  const info = contacted.classifyFailure(job, lead, now);
+  const retryCount = job.deliveryRetryCount || 0;
+  const exhausted = retryCount >= MAX_DELIVERY_RETRIES;
+
+  let state;
+  if (info.group === "cannot_send" || exhausted) state = "blocked";
+  else state = info.ready ? "ready" : "waiting";
+
+  const code = info.code || job.deliveryErrorCode || job.lastErrorCode || null;
+  const reason = exhausted
+    ? `${info.reason || "Delivery failed"} — max ${MAX_DELIVERY_RETRIES} retry ho chuke`
+    : info.reason || "Delivery failed";
+
   return {
-    $and: [
-      { $eq: ["$retryable", true] },
-      { $lt: [{ $ifNull: ["$deliveryRetryCount", 0] }, MAX_DELIVERY_RETRIES] },
-      { $lte: ["$retryAfter", now] },
-    ],
+    kind,
+    state,
+    code,
+    reason,
+    retryAfter: state === "waiting" ? info.retryAfter : null,
+    retryable: state !== "blocked",
+    retryCount,
   };
 }
-function waitingExpr(now) {
-  return {
-    $and: [
-      { $eq: ["$retryable", true] },
-      { $lt: [{ $ifNull: ["$deliveryRetryCount", 0] }, MAX_DELIVERY_RETRIES] },
-      { $gt: ["$retryAfter", now] },
-    ],
-  };
+
+async function loadLeads(jobs) {
+  const ids = [...new Set(jobs.map((j) => String(j.leadId)).filter(Boolean))];
+  if (!ids.length) return new Map();
+  const leads = await Lead.find(
+    { _id: { $in: ids.map(oid) } },
+    { name: 1, phone: 1, whatsappHealth: 1 },
+  ).lean();
+  return new Map(leads.map((l) => [String(l._id), l]));
 }
 
 const emptySummary = () => ({
   total: 0,
+  meta: 0, // Meta webhook se deliver nahi hua
+  send: 0, // bhejte waqt hi fail
   ready: 0,
   waiting: 0,
   blocked: 0,
   nextReadyAt: null,
+  reasons: [], // [{ code, reason, count }] sabse zyada pehle
 });
 
-/**
- * Webhook "failed" status ko job par lagao.
- * error = Meta ka statuses[].errors[0] ({ code, title, message })
- */
-async function applyDeliveryFailure({ jobId, error }) {
-  const job = await OutboundJob.findById(jobId).lean();
-  if (!job) return null;
-
-  const code = error?.code ? String(error.code) : "unknown";
-  const rule = classify(code, error?.title || error?.message);
-  const now = new Date();
-
-  await OutboundJob.updateOne(
-    { _id: job._id },
-    {
-      $set: {
-        status: "failed",
-        lockedAt: null,
-        deliveryFailed: true,
-        deliveryFailedAt: now,
-        deliveryErrorCode: code,
-        retryable: rule.retryable,
-        retryAfter: new Date(now.getTime() + rule.cooldownMs),
-        lastError: `${rule.label} (code ${code})`,
-        lastErrorCode: code,
-      },
-    },
-  );
-
-  // Realtime: Outreach page par row + campaign card turant update ho
-  try {
-    emitToUser(job.ownerId, "outreach:job", {
-      jobId: String(job._id),
-      campaignId: job.campaignId ? String(job.campaignId) : null,
-      leadId: String(job.leadId),
-      channel: job.channel || "whatsapp",
-      status: "failed",
-      attempts: job.attempts,
-      sentAt: job.sentAt || null,
-      nextRunAt: job.nextRunAt,
-      lastError: `${rule.label} (code ${code})`,
-    });
-    if (job.campaignId) {
-      const { getCampaignStats } = require("./outboundQueue");
-      const stats = await getCampaignStats(job.campaignId);
-      emitToUser(job.ownerId, "outreach:progress", {
-        campaignId: String(job.campaignId),
-        stats,
-      });
-      emitToUser(job.ownerId, "outreach:campaign", {
-        campaignId: String(job.campaignId),
-        deliveryFailure: true,
-      });
-    }
-  } catch (err) {
-    logger.warn("[delivery-failure] Could not emit realtime event", {
-      error: err.message,
-    });
+function addTo(summary, d, reasonCounts) {
+  summary.total += 1;
+  summary[d.kind] += 1;
+  summary[d.state] += 1;
+  if (
+    d.state === "waiting" &&
+    d.retryAfter &&
+    (!summary.nextReadyAt ||
+      new Date(d.retryAfter) < new Date(summary.nextReadyAt))
+  ) {
+    summary.nextReadyAt = d.retryAfter;
   }
-
-  logger.warn("[delivery-failure] Job marked failed from Meta webhook", {
-    jobId: String(job._id),
-    campaignId: job.campaignId ? String(job.campaignId) : null,
-    code,
-    retryable: rule.retryable,
-  });
-  return { jobId: String(job._id), code, ...rule };
+  const key = `${d.code || "-"}|${d.reason}`;
+  const row = reasonCounts.get(key) || {
+    code: d.code,
+    reason: d.reason,
+    count: 0,
+  };
+  row.count += 1;
+  reasonCounts.set(key, row);
 }
 
-/** Campaigns ki list ke liye: { campaignIdString: summary } */
+function finish(summary, reasonCounts, top = 5) {
+  summary.reasons = [...reasonCounts.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, top);
+  return summary;
+}
+
+/** Campaigns ki list ke liye: Map<campaignIdString, summary> */
 async function summarizeForCampaigns(campaignIds) {
   const out = new Map();
   if (!campaignIds?.length) return out;
 
+  const jobs = await OutboundJob.find(
+    failedMatch({ campaignId: { $in: campaignIds.map(oid) } }),
+  )
+    .select(JOB_FIELDS)
+    .lean();
+  if (!jobs.length) return out;
+
+  const leadById = await loadLeads(jobs);
   const now = new Date();
-  const rows = await OutboundJob.aggregate([
-    {
-      $match: {
-        campaignId: { $in: campaignIds.map(oid) },
-        channel: "whatsapp",
-        status: "failed",
-        deliveryFailed: true,
-      },
-    },
-    {
-      $group: {
-        _id: "$campaignId",
-        total: { $sum: 1 },
-        ready: { $sum: { $cond: [readyExpr(now), 1, 0] } },
-        waiting: { $sum: { $cond: [waitingExpr(now), 1, 0] } },
-        nextReadyAt: {
-          $min: { $cond: [waitingExpr(now), "$retryAfter", null] },
-        },
-      },
-    },
-  ]);
-
-  for (const r of rows) {
-    out.set(String(r._id), {
-      total: r.total,
-      ready: r.ready,
-      waiting: r.waiting,
-      blocked: r.total - r.ready - r.waiting,
-      nextReadyAt: r.nextReadyAt || null,
-    });
+  const reasonsBy = new Map();
+  for (const job of jobs) {
+    const key = String(job.campaignId);
+    if (!out.has(key)) {
+      out.set(key, emptySummary());
+      reasonsBy.set(key, new Map());
+    }
+    addTo(
+      out.get(key),
+      describe(job, leadById.get(String(job.leadId)), now),
+      reasonsBy.get(key),
+    );
   }
+  for (const [key, summary] of out) finish(summary, reasonsBy.get(key), 3);
   return out;
-}
-
-function stateOf(job, now) {
-  if (!job.retryable) return "blocked";
-  if ((job.deliveryRetryCount || 0) >= MAX_DELIVERY_RETRIES) return "blocked";
-  return new Date(job.retryAfter) <= now ? "ready" : "waiting";
 }
 
 /** Popup ke liye: summary + har failed contact */
@@ -208,61 +159,49 @@ async function getFailureDetails(ownerId, campaignId) {
   }).lean();
   if (!campaign) return null;
 
-  const now = new Date();
-  const jobs = await OutboundJob.find({
-    ownerId,
-    campaignId: campaign._id,
-    channel: "whatsapp",
-    status: "failed",
-    deliveryFailed: true,
-  })
-    .sort({ deliveryFailedAt: -1 })
-    .limit(2000)
-    .populate("leadId", "name phone")
+  const jobs = await OutboundJob.find(
+    failedMatch({ ownerId: oid(ownerId), campaignId: campaign._id }),
+  )
+    .select(JOB_FIELDS)
+    .sort({ deliveryUpdatedAt: -1, updatedAt: -1 })
+    .limit(5000)
     .lean();
 
+  const leadById = await loadLeads(jobs);
+  const now = new Date();
   const summary = emptySummary();
+  const reasonCounts = new Map();
   const contacts = jobs.map((j) => {
-    const state = stateOf(j, now);
-    summary.total += 1;
-    if (state === "ready") summary.ready += 1;
-    else if (state === "waiting") {
-      summary.waiting += 1;
-      if (!summary.nextReadyAt || j.retryAfter < summary.nextReadyAt) {
-        summary.nextReadyAt = j.retryAfter;
-      }
-    } else summary.blocked += 1;
-
-    const exhausted =
-      j.retryable && (j.deliveryRetryCount || 0) >= MAX_DELIVERY_RETRIES;
+    const lead = leadById.get(String(j.leadId));
+    const d = describe(j, lead, now);
+    addTo(summary, d, reasonCounts);
     return {
       jobId: String(j._id),
-      leadId: j.leadId?._id ? String(j.leadId._id) : null,
-      name: j.leadId?.name || "(deleted lead)",
-      phone: j.leadId?.phone || "",
-      errorCode: j.deliveryErrorCode || j.lastErrorCode || null,
-      reason: exhausted
-        ? `${j.lastError || "Delivery failed"} — max retries reached`
-        : j.lastError || "Delivery failed",
-      failedAt: j.deliveryFailedAt,
-      retryAfter: j.retryAfter,
-      retryable: Boolean(j.retryable) && !exhausted,
-      retryCount: j.deliveryRetryCount || 0,
-      state,
+      leadId: j.leadId ? String(j.leadId) : null,
+      name: lead?.name || "(deleted lead)",
+      phone: lead?.phone || "",
+      kind: d.kind,
+      errorCode: d.code,
+      reason: d.reason,
+      failedAt: j.deliveryUpdatedAt || j.updatedAt || j.sentAt || null,
+      retryAfter: d.retryAfter,
+      retryable: d.retryable,
+      retryCount: d.retryCount,
+      state: d.state,
     };
   });
 
   return {
     campaign: { _id: String(campaign._id), name: campaign.name },
-    summary,
+    summary: finish(summary, reasonCounts),
     maxRetries: MAX_DELIVERY_RETRIES,
     contacts,
   };
 }
 
 /**
- * Jo failed contacts "ready" hain (cooldown khatam + retry allowed) unhe
- * usi campaign mein wapas queue kar do. Same template, same worker.
+ * Jo failed contacts "ready" hain (cooldown khatam + retry allowed + max retry
+ * nahi hua) unhe usi campaign me wapas queue karo. Same template, same worker.
  */
 async function retryReadyFailures(ownerId, campaignId) {
   const campaign = await Campaign.findOne({
@@ -275,50 +214,48 @@ async function retryReadyFailures(ownerId, campaignId) {
     return { campaign, requeued: 0, reason: "campaign_cancelled" };
   }
 
-  const now = new Date();
-  const readyJobs = await OutboundJob.find({
-    ownerId,
-    campaignId: campaign._id,
-    channel: "whatsapp",
-    status: "failed",
-    deliveryFailed: true,
-    retryable: true,
-    deliveryRetryCount: { $lt: MAX_DELIVERY_RETRIES },
-    retryAfter: { $lte: now },
-  })
-    .select("_id")
+  const jobs = await OutboundJob.find(
+    failedMatch({ ownerId: oid(ownerId), campaignId: campaign._id }),
+  )
+    .select(JOB_FIELDS)
     .lean();
+  const leadById = await loadLeads(jobs);
+  const now = new Date();
+  const ids = jobs
+    .filter(
+      (j) => describe(j, leadById.get(String(j.leadId)), now).state === "ready",
+    )
+    .map((j) => j._id);
 
-  if (!readyJobs.length) return { campaign, requeued: 0, reason: "none_ready" };
-  const ids = readyJobs.map((j) => j._id);
+  if (!ids.length) return { campaign, requeued: 0, reason: "none_ready" };
 
-  // Purani failed Message ko history mein rehne do, par uska outboundJobId
-  // hata do — warna startConversation use "already_started" maan lega aur
-  // naya message bheje bina job ko "sent" mark kar dega.
+  // Purani failed Message history me rahe, par uska outboundJobId hata do —
+  // warna startConversation use "already_started" maan kar naya message
+  // bheje bina job ko "sent" mark kar dega.
   await Message.updateMany(
     { outboundJobId: { $in: ids } },
     { $set: { outboundJobId: null } },
   );
 
-  const res = await OutboundJob.updateMany(
-    { _id: { $in: ids }, status: "failed", deliveryFailed: true },
-    {
-      $set: {
-        // Campaign paused hai to jobs bhi paused rahen, resume par chalenge
-        status: campaign.status === "paused" ? "paused" : "pending",
-        attempts: 0,
-        nextRunAt: now,
-        lockedAt: null,
-        sentAt: null,
-        lastError: null,
-        lastErrorCode: null,
-        deliveryFailed: false,
-      },
-      $inc: { deliveryRetryCount: 1 },
+  const res = await OutboundJob.updateMany(failedMatch({ _id: { $in: ids } }), {
+    $set: {
+      // Campaign paused hai to jobs bhi paused rahen, resume par chalenge
+      status: campaign.status === "paused" ? "paused" : "pending",
+      attempts: 0,
+      nextRunAt: now,
+      lockedAt: null,
+      sentAt: null,
+      lastError: null,
+      lastErrorCode: null,
+      deliveryStatus: null,
+      deliveryErrorCode: null,
+      deliveryError: null,
+      deliveryUpdatedAt: null,
     },
-  );
+    $inc: { deliveryRetryCount: 1 },
+  });
 
-  if (res.modifiedCount && ["completed"].includes(campaign.status)) {
+  if (res.modifiedCount && campaign.status === "completed") {
     campaign.status = "active";
     campaign.completedAt = null;
     await campaign.save();
@@ -329,8 +266,8 @@ async function retryReadyFailures(ownerId, campaignId) {
 
 module.exports = {
   MAX_DELIVERY_RETRIES,
-  classify,
-  applyDeliveryFailure,
+  failedMatch,
+  describe,
   summarizeForCampaigns,
   getFailureDetails,
   retryReadyFailures,

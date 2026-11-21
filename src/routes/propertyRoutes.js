@@ -17,6 +17,8 @@ const {
   deleteProperty,
   bulkDeleteProperties,
   exportProperties,
+  addPropertyImages,
+  removePropertyImage,
 } = require("../controllers/propertyController");
 
 const {
@@ -26,6 +28,7 @@ const {
   idParamSchema,
   bulkDeleteSchema,
   importConfirmSchema,
+  removeImageSchema,
 } = require("../validators/propertyValidators");
 
 router.use(authenticate);
@@ -103,5 +106,14 @@ router.delete(
   validate(idParamSchema),
   deleteProperty,
 );
+
+// Excel mode: ek row (property) par multiple photos
+router.post(
+  "/:id/images",
+  validate(idParamSchema),
+  uploadBrochure.fields([{ name: "images", maxCount: 10 }]),
+  addPropertyImages,
+);
+router.delete("/:id/images", validate(removeImageSchema), removePropertyImage);
 
 module.exports = router;

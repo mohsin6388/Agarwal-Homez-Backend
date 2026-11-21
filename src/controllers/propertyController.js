@@ -65,6 +65,7 @@ const confirmImport = asyncHandler(async (req, res) => {
     budgetMin: r.budgetMin ?? null,
     budgetMax: r.budgetMax ?? null,
     sizeSqft: r.sizeSqft ?? null,
+    pricePerSqft: r.pricePerSqft ?? null,
     amenities: r.amenities || [],
     parking: !!r.parking,
     reraNumber: r.reraNumber || undefined,
@@ -361,6 +362,59 @@ const updateProperty = asyncHandler(async (req, res) => {
 });
 
 /**
+ * POST /api/properties/:id/images  (multipart, field "images", max 10)
+ * Excel mode: kisi bhi row par multiple photos jodna. Cloudinary par upload
+ * hokar property.images me append hoti hain (AI "photos bhejo" par yahi bhejta hai).
+ */
+const MAX_PROPERTY_IMAGES = 20;
+const addPropertyImages = asyncHandler(async (req, res) => {
+  const property = await Property.findOne({
+    _id: req.params.id,
+    ...scopeToOwner(req),
+  });
+  if (!property) throw ApiError.notFound("Property not found");
+  const files = req.files?.images || [];
+  if (!files.length) throw ApiError.badRequest("Koi photo nahi chuni");
+  const room = MAX_PROPERTY_IMAGES - (property.images?.length || 0);
+  if (room <= 0)
+    throw ApiError.badRequest(
+      `Ek property par max ${MAX_PROPERTY_IMAGES} photos ho sakti hain`,
+    );
+
+  const urls = [];
+  for (const file of files.slice(0, room)) {
+    const result = await uploadBufferToCloudinary(file.buffer, {
+      folder: "properties/images",
+      resourceType: "image",
+    });
+    urls.push(result.secure_url);
+  }
+  const updated = await Property.findOneAndUpdate(
+    { _id: property._id },
+    { $push: { images: { $each: urls } } },
+    { new: true },
+  );
+  return new ApiResponse(
+    200,
+    { property: updated, added: urls.length },
+    `${urls.length} photo(s) added`,
+  ).send(res);
+});
+
+/**
+ * DELETE /api/properties/:id/images  body: { url }
+ */
+const removePropertyImage = asyncHandler(async (req, res) => {
+  const property = await Property.findOneAndUpdate(
+    { _id: req.params.id, ...scopeToOwner(req) },
+    { $pull: { images: req.body.url } },
+    { new: true },
+  );
+  if (!property) throw ApiError.notFound("Property not found");
+  return new ApiResponse(200, { property }, "Photo removed").send(res);
+});
+
+/**
  * DELETE /api/properties/:id
  */
 const deleteProperty = asyncHandler(async (req, res) => {
@@ -410,6 +464,7 @@ const exportProperties = asyncHandler(async (req, res) => {
     "budgetMin",
     "budgetMax",
     "sizeSqft",
+    "pricePerSqft",
     "amenities",
     "parking",
     "reraNumber",
@@ -447,4 +502,6 @@ module.exports = {
   deleteProperty,
   bulkDeleteProperties,
   exportProperties,
+  addPropertyImages,
+  removePropertyImage,
 };

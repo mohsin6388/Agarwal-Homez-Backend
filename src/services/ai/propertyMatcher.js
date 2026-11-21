@@ -383,10 +383,17 @@ function scoreMatch(
 
     const buyerMax = toNumberOrNull(budgetMax) ?? Number.MAX_SAFE_INTEGER;
 
-    const propertyMin = toNumberOrNull(property.budgetMin) ?? 0;
+    // Sheet me sirf rate (₹/sq ft) + area ho to approx total se match karo
+    const rate = toNumberOrNull(property.pricePerSqft);
+    const area = toNumberOrNull(property.sizeSqft);
+    const rateTotal = rate && area ? Math.round(rate * area) : null;
+
+    const propertyMin = toNumberOrNull(property.budgetMin) ?? rateTotal ?? 0;
 
     const propertyMax =
-      toNumberOrNull(property.budgetMax) ?? Number.MAX_SAFE_INTEGER;
+      toNumberOrNull(property.budgetMax) ??
+      rateTotal ??
+      Number.MAX_SAFE_INTEGER;
 
     const overlaps = propertyMin <= buyerMax && propertyMax >= buyerMin;
 

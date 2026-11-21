@@ -20,6 +20,9 @@ const propertySchema = new Schema(
     budgetMin: { type: Number, default: null },
     budgetMax: { type: Number, default: null },
     sizeSqft: { type: Number, default: null },
+    // Rate per sq ft (₹). Sheet me "Price from/to" na ho to AI isi se
+    // approx total (rate × area) batata hai.
+    pricePerSqft: { type: Number, default: null },
 
     amenities: [{ type: String, trim: true }],
     parking: { type: Boolean, default: false },

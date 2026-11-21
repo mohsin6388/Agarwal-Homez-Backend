@@ -13,6 +13,7 @@ const createPropertySchema = z.object({
     budgetMin: z.number().nonnegative().nullable().optional(),
     budgetMax: z.number().nonnegative().nullable().optional(),
     sizeSqft: z.number().nonnegative().nullable().optional(),
+    pricePerSqft: z.number().nonnegative().nullable().optional(),
     amenities: z.array(z.string().max(60)).optional(),
     parking: z.boolean().optional(),
     reraNumber: z.string().max(60).optional(),
@@ -38,6 +39,12 @@ const createPropertySchema = z.object({
 const updatePropertySchema = z.object({
   params: z.object({ id: objectId }),
   body: createPropertySchema.shape.body.partial(),
+});
+
+// Excel mode: ek row par multiple photos (upload alag route se, yahan remove)
+const removeImageSchema = z.object({
+  params: z.object({ id: objectId }),
+  body: z.object({ url: z.string().min(1).max(2000) }),
 });
 
 const listPropertiesQuerySchema = z.object({
@@ -83,6 +90,7 @@ const importConfirmSchema = z.object({
           budgetMin: z.number().nullable().optional(),
           budgetMax: z.number().nullable().optional(),
           sizeSqft: z.number().nullable().optional(),
+          pricePerSqft: z.number().nullable().optional(),
           amenities: z.array(z.string()).optional().default([]),
           parking: z.boolean().optional().default(false),
           reraNumber: z.string().optional().default(""),
@@ -111,4 +119,5 @@ module.exports = {
   idParamSchema,
   bulkDeleteSchema,
   importConfirmSchema,
+  removeImageSchema,
 };
