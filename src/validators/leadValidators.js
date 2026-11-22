@@ -45,6 +45,9 @@ const listLeadsQuerySchema = z.object({
     tag: z.string().optional(),
     channel: z.enum(["whatsapp", "email"]).optional(),
     delivery: z.enum(["sent", "unsent"]).optional(),
+    // WhatsApp picker: bheje gaye / failed contacts bhi list me dikhao (default: chhupe)
+    showSent: z.enum(["0", "1", "true", "false"]).optional(),
+    showFailed: z.enum(["0", "1", "true", "false"]).optional(),
     qualifiedOnly: z.enum(["0", "1", "true", "false"]).optional(),
     // Qualified Leads tabs: all (score > 30), hot (score > 60), visit (site visit booked)
     stage: z.enum(["all", "hot", "visit"]).optional(),
@@ -55,6 +58,17 @@ const listLeadsQuerySchema = z.object({
     // just the ordered ids so "Sr. no. 1 to 200" can be selected across pages.
     file: z.string().max(200).optional(),
     idsOnly: z.enum(["0", "1", "true", "false"]).optional(),
+    // Upload Data filters
+    dateFrom: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    dateTo: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    reply: z.enum(["replied", "not_replied"]).optional(),
+    temperature: z.enum(["hot", "warm", "cold"]).optional(),
     sortBy: z
       .enum(["createdAt", "updatedAt", "name", "leadScore"])
       .default("createdAt"),

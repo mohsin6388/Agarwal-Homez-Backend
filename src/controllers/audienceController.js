@@ -127,46 +127,53 @@ const getAudienceLeads = asyncHandler(async (req, res) => {
     String(req.query.excludeSent || ""),
   );
 
+  const wantDetails = ["1", "true"].includes(String(req.query.details || ""));
+  // Preview list me itne hi rows aate hain (badi audience par response halka rahe);
+  // leadIds hamesha poori list ke hote hain, isliye campaign me sab jate hain.
+  const PREVIEW_LIMIT = 500;
+
   const filter = { ownerId, _id: { $in: audience.leadIds } };
   if (channel === "whatsapp") filter.phone = { $type: "string", $ne: "" };
   if (channel === "email") filter.email = { $type: "string", $ne: "" };
-  let ids = await Lead.find(filter).distinct("_id");
-  let skippedSent = 0;
-  if (excludeSent && channel && ids.length) {
-    // WhatsApp: Contacts sheet jaisa hi rule — jinko pehle bheja, jinka send
-    // fail hua, ya jo kisi campaign ki queue me hain, sab chhupao.
-    const hidden =
-      channel === "whatsapp"
-        ? await contacted.getHiddenLeadIds(ownerId)
-        : await OutboundJob.distinct("leadId", {
+
+  // Ek hi query me leads + (parallel) hidden ids — pehle distinct + dobara find
+  // + sequential hidden lookup hota tha, jis se popup der se khulta tha.
+  const needHidden = excludeSent && Boolean(channel);
+  const [rows, hiddenRaw] = await Promise.all([
+    Lead.find(filter)
+      .select("_id name phone email address jobTitle createdAt")
+      .sort({ createdAt: 1, _id: 1 })
+      .lean(),
+    !needHidden
+      ? Promise.resolve([])
+      : channel === "whatsapp"
+        ? // Contacts sheet jaisa hi rule — jinko pehle bheja, jinka send fail
+          // hua, ya jo kisi campaign ki queue me hain, sab chhupao.
+          contacted.getHiddenLeadIds(ownerId)
+        : OutboundJob.distinct("leadId", {
             ownerId,
             channel,
             status: "sent",
-            leadId: { $in: ids },
-          });
-    const hiddenSet = new Set(hidden.map(String));
-    const before = ids.length;
-    ids = ids.filter((id) => !hiddenSet.has(String(id)));
-    skippedSent = before - ids.length;
-  }
+            leadId: { $in: audience.leadIds },
+          }),
+  ]);
 
-  // ?details=1 → contacts ki list bhi ek hi query me (pehle frontend har id ke
-  // liye alag request bhejta tha — 1500+ requests me page atak jata tha).
-  let contacts;
-  if (["1", "true"].includes(String(req.query.details || "")) && ids.length) {
-    const rows = await Lead.find({ ownerId, _id: { $in: ids } })
-      .select("_id name phone email address jobTitle createdAt")
-      .sort({ createdAt: 1, _id: 1 })
-      .lean();
-    contacts = rows;
-  }
+  const hiddenSet = new Set(hiddenRaw.map(String));
+  const ready = needHidden
+    ? rows.filter((row) => !hiddenSet.has(String(row._id)))
+    : rows;
+  const skippedSent = rows.length - ready.length;
+  const ids = ready.map((row) => row._id);
+  const contacts = wantDetails ? ready.slice(0, PREVIEW_LIMIT) : undefined;
 
   return new ApiResponse(200, {
-    leadIds: contacts ? contacts.map((c) => c._id) : ids,
+    leadIds: ids,
     total: audience.leadIds.length,
     ready: ids.length,
     skippedSent,
-    ...(contacts ? { contacts } : {}),
+    ...(contacts
+      ? { contacts, contactsTruncated: ids.length > contacts.length }
+      : {}),
   }).send(res);
 });
 

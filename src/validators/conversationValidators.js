@@ -12,6 +12,13 @@ const listConversationsSchema = z.object({
     search: z.string().optional(),
     leadId: objectId.optional(),
     ownerId: objectId.optional(),
+    // YYYY-MM-DD (IST): us din jin chats me message gaya/aaya unhi ko dikhao
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "date YYYY-MM-DD honi chahiye")
+      .optional(),
+    // date ke saath: sirf bheje gaye / sirf customer ke reply wale chats
+    activity: z.enum(["sent", "replied"]).optional(),
   }),
 });
 

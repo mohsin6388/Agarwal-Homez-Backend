@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const { analyzeLeadAsync } = require("../services/ai/leadAnalyzer");
 const EmailMessage = require("../models/EmailMessage");
+const OutboundJob = require("../models/OutboundJob");
 const Notification = require("../models/Notification");
 const logger = require("../utils/logger");
 const env = require("../config/env");
@@ -77,7 +78,7 @@ async function findOutboundByProviderId(providerId) {
       { rfcMessageId: unbracketed },
       { rfcMessageId: bracketed },
     ],
-  }).select("_id").lean();
+  }).select("_id outboundJobId").lean();
 }
 
 async function processInboundItem(item) {
@@ -205,6 +206,38 @@ const STATUS_MAP = {
   error: "failed",
 };
 
+// Outreach page (OutboundJob) ke liye: email asli me banday tak pahunchi ya nahi.
+//  delivered / opened / clicked -> pahunch gayi (sent dikhao)
+//  hardbounce / invalid / blocked / error -> nahi pahunchi (failed + wajah)
+//  softbounce / deferred -> abhi pending (kuch mat badlo, Brevo retry karta hai)
+const JOB_DELIVERED = ["delivered", "click", "clicked", "spam", "unsubscribed"];
+const JOB_READ = ["opened", "firstopening", "uniqueopened", "proxyopen", "uniqueproxyopen"];
+const JOB_FAILED = ["hardbounce", "invalid", "blocked", "error"];
+const FAILURE_TEXT = {
+  hardbounce: "Email address exist nahi karta ya server ne permanently reject kar diya (hard bounce).",
+  invalid: "Email address galat / invalid hai.",
+  blocked: "Brevo ne email block ki — ye address pehle bounce, unsubscribe ya blocklist me hai.",
+  error: "Brevo email deliver nahi kar paya.",
+};
+
+async function syncOutboundJob(jobId, eventName, event) {
+  if (!jobId) return;
+  const now = new Date();
+  if (JOB_FAILED.includes(eventName)) {
+    const reason = String(event.reason || event.reason_message || event.response || "").trim();
+    await OutboundJob.updateOne({ _id: jobId }, { $set: {
+      deliveryStatus: "failed",
+      deliveryErrorCode: eventName,
+      deliveryError: `${FAILURE_TEXT[eventName]}${reason ? ` Reason: ${reason}` : ""}`.slice(0, 500),
+      deliveryUpdatedAt: now,
+    } });
+  } else if (JOB_READ.includes(eventName)) {
+    await OutboundJob.updateOne({ _id: jobId, deliveryStatus: { $ne: "failed" } }, { $set: { deliveryStatus: "read", deliveryUpdatedAt: now } });
+  } else if (JOB_DELIVERED.includes(eventName)) {
+    await OutboundJob.updateOne({ _id: jobId, deliveryStatus: { $nin: ["failed", "read"] } }, { $set: { deliveryStatus: "delivered", deliveryUpdatedAt: now } });
+  }
+}
+
 async function processTransactionalEvent(event) {
   const providerId = event["message-id"] || event.messageId || event.message_id || event.email_id;
   const eventId = String(event.uuid || event.eventId || event.event_id || "");
@@ -215,8 +248,8 @@ async function processTransactionalEvent(event) {
   if (!tracked) {
     const messageObjectId = taggedObjectId(tags, "propai_message_id");
     const jobObjectId = taggedObjectId(tags, "propai_job_id");
-    if (messageObjectId) tracked = await EmailMessage.findById(messageObjectId).select("_id").lean();
-    else if (jobObjectId) tracked = await EmailMessage.findOne({ outboundJobId: jobObjectId, direction: "outbound" }).select("_id").lean();
+    if (messageObjectId) tracked = await EmailMessage.findById(messageObjectId).select("_id outboundJobId").lean();
+    else if (jobObjectId) tracked = await EmailMessage.findOne({ outboundJobId: jobObjectId, direction: "outbound" }).select("_id outboundJobId").lean();
   }
   if (!tracked) {
     logger.info("[brevo-webhook] Event received before tracked message could be matched", { eventName, providerId });
@@ -253,6 +286,7 @@ async function processTransactionalEvent(event) {
     ...(Object.keys(update).length ? { $set: update } : {}),
     ...(eventId ? { $addToSet: { eventIds: eventId } } : {}),
   });
+  await syncOutboundJob(tracked.outboundJobId, eventName, event);
 }
 
 async function handler(req, res) {

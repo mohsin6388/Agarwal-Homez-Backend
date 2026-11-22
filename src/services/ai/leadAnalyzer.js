@@ -32,8 +32,27 @@ const ANALYSIS_RESPONSE_SCHEMA = {
   required: ['score', 'level', 'summary', 'reason', 'nextFollowUpDate', 'nextFollowUpMessage', 'urgency'],
 };
 
+// Follow-up dates hamesha India (IST) ke hisaab se — pehle UTC se bante the to
+// raat ko / doosre timezone me date ek din aage-peeche dikhti thi.
+const IST_OFFSET = '+05:30';
+const istDateString = (ms = Date.now()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+const addDaysIST = (days) => istDateString(Date.now() + days * 86400000);
+
+/** AI ki di hui date ko validate karo: galat/purani ho to urgency ke hisaab se aaj se gino. */
+function resolveFollowUpDate(raw, urgency, level) {
+  const today = istDateString();
+  const str = String(raw || '').slice(0, 10);
+  const ok = /^\d{4}-\d{2}-\d{2}$/.test(str) && !Number.isNaN(new Date(`${str}T00:00:00${IST_OFFSET}`).getTime());
+  if (ok && str >= today) return new Date(`${str}T09:00:00${IST_OFFSET}`);
+  const days = urgency === 'high' || level === 'hot' ? 1 : urgency === 'low' || level === 'cold' ? 7 : 3;
+  return new Date(`${addDaysIST(days)}T09:00:00${IST_OFFSET}`);
+}
+
 function buildAnalysisPrompt(lead) {
-  return `You are a real estate sales analyst reviewing the WhatsApp and email conversation between a sales executive (or the AI assistant) and a buyer named ${lead.name}.
+  return `Today's date is ${istDateString()} (India, IST). Every date you return must be calculated from this date.
+
+You are a real estate sales analyst reviewing the WhatsApp and email conversation between a sales executive (or the AI assistant) and a buyer named ${lead.name}.
 
 Scoring scale used by the CRM: 0-${LEAD_SCORE} = not a lead yet (no real interest), ${LEAD_SCORE + 1}-${HOT_SCORE} = lead (some genuine interest), above ${HOT_SCORE} = hot lead (clear intent: budget, location, timeline, visit or price discussion).
 
@@ -43,7 +62,7 @@ Read the full conversation history and return a structured analysis:
 - Whether their budget realistically matches what's being discussed.
 - A closing probability (0-100).
 - A short summary and the reasoning behind your score.
-- A sensible next follow-up date (consider urgency — hot leads get followed up sooner, within 1-2 days; cold leads can wait longer) and a natural draft opening line for that follow-up.
+- A sensible next follow-up date in YYYY-MM-DD format, always today or later (consider urgency — hot leads get followed up sooner, within 1-2 days; cold leads can wait longer) and a natural draft opening line for that follow-up.
 - Urgency level and an overall buying probability.
 
 Be realistic and conservative — don't inflate scores just because the buyer was polite.`;
@@ -150,7 +169,7 @@ async function analyzeLeadAsync({ leadId, conversationId = null }) {
     const days = fallback.score > HOT_SCORE ? 1 : fallback.score > LEAD_SCORE ? 3 : 7;
     parsed = {
       ...fallback,
-      nextFollowUpDate: new Date(Date.now() + days * 86400000).toISOString().slice(0, 10),
+      nextFollowUpDate: addDaysIST(days),
       nextFollowUpMessage: `Namaste ${lead.name || ''}, aapki property requirement par aage baat karein?`.replace(/\s+,/, ','),
       modelVersion: 'heuristic',
     };
@@ -195,7 +214,7 @@ async function analyzeLeadAsync({ leadId, conversationId = null }) {
       {
         leadId,
         ownerId: lead.ownerId,
-        nextFollowUpDate: new Date(parsed.nextFollowUpDate),
+        nextFollowUpDate: resolveFollowUpDate(parsed.nextFollowUpDate, parsed.urgency, parsed.level),
         nextFollowUpMessage: parsed.nextFollowUpMessage,
         urgency: parsed.urgency || 'medium',
         buyingProbability: parsed.buyingProbability != null ? clamp(parsed.buyingProbability, 0, 100) : null,

@@ -178,9 +178,15 @@ async function getContactedState(ownerId, { fresh = false } = {}) {
 }
 
 /** Contacts picker se chhupane wale lead ids (attempted + queued) */
-async function getHiddenLeadIds(ownerId) {
+async function getHiddenLeadIds(ownerId, { showSent = false, showFailed = false } = {}) {
   const { byLead, queuedIds } = await getContactedState(ownerId);
-  return [...byLead.keys(), ...queuedIds].map(oid);
+  // Queue wale hamesha chhupe; bheje gaye / failed tabhi dikhte hain jab user filter on kare
+  const hidden = [...queuedIds];
+  for (const [id, info] of byLead) {
+    const isSent = GROUPS.sent.includes(info.group);
+    if (isSent ? !showSent : !showFailed) hidden.push(id);
+  }
+  return hidden.map(oid);
 }
 
 /* ------------------------------------------------------------------ */

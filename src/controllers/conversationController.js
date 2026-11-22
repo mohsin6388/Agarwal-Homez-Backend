@@ -24,7 +24,7 @@ function scopeOwnerId(req) {
  */
 const listConversations = asyncHandler(async (req, res) => {
   const ownerId = scopeOwnerId(req);
-  const { filter, search, page, limit, leadId } = req.query;
+  const { filter, search, page, limit, leadId, date, activity } = req.query;
 
   const leadFilter = { ownerId };
   if (leadId) leadFilter._id = leadId; // open a lead's chat straight from Leads / Follow Ups
@@ -48,11 +48,29 @@ const listConversations = asyncHandler(async (req, res) => {
 
   // Imported contacts may have an empty Conversation shell for future sends.
   // Only show a thread after a real inbound message or a successfully sent outbound message exists.
+  const inboundClause = { direction: "inbound", sender: "customer" };
+  const outboundClause = {
+    direction: "outbound",
+    status: { $in: ["sent", "delivered", "read"] },
+  };
+
+  // Date filter (IST din): us din ke sent / reply messages wale chats
+  let dayRange = null;
+  if (date) {
+    const start = new Date(`${date}T00:00:00.000+05:30`);
+    if (!Number.isNaN(start.getTime()))
+      dayRange = { $gte: start, $lt: new Date(start.getTime() + 86400000) };
+  }
+  const clauses =
+    activity === "sent"
+      ? [outboundClause]
+      : activity === "replied"
+        ? [inboundClause]
+        : [inboundClause, outboundClause];
   const activeConversationIds = await Message.distinct("conversationId", {
-    $or: [
-      { direction: "inbound", sender: "customer" },
-      { direction: "outbound", status: { $in: ["sent", "delivered", "read"] } },
-    ],
+    $or: dayRange
+      ? clauses.map((c) => ({ ...c, timestamp: dayRange }))
+      : clauses,
   });
   const convFilter = {
     ownerId,
@@ -71,6 +89,29 @@ const listConversations = asyncHandler(async (req, res) => {
       .lean(),
     Conversation.countDocuments(convFilter),
   ]);
+
+  // Date filter ho to har chat ke liye us din kitne sent / reply gaye (list me badge)
+  if (dayRange && conversations.length) {
+    const rows = await Message.aggregate([
+      {
+        $match: {
+          conversationId: { $in: conversations.map((c) => c._id) },
+          timestamp: dayRange,
+          $or: [inboundClause, outboundClause],
+        },
+      },
+      { $group: { _id: { c: "$conversationId", d: "$direction" }, n: { $sum: 1 } } },
+    ]);
+    const byConv = new Map();
+    for (const r of rows) {
+      const cur = byConv.get(String(r._id.c)) || { sent: 0, replied: 0 };
+      if (r._id.d === "outbound") cur.sent = r.n;
+      else cur.replied = r.n;
+      byConv.set(String(r._id.c), cur);
+    }
+    for (const c of conversations)
+      c.dayStats = byConv.get(String(c._id)) || { sent: 0, replied: 0 };
+  }
 
   // WhatsApp jaisa list: har chat ka last message (text, tick status, time)
   const pageConvIds = conversations.map((c) => c._id);

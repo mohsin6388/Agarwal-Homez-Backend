@@ -9,7 +9,8 @@
     "dev": "nodemon server.js",
     "seed:admin": "node src/utils/seedAdmin.js",
     "seed:client": "node src/utils/seedClient.js",
-    "migrate:lead-contact-indexes": "node src/scripts/migrateLeadContactIndexes.js"
+    "migrate:lead-contact-indexes": "node src/scripts/migrateLeadContactIndexes.js",
+    "sync:email-delivery": "node src/scripts/syncEmailDeliveryStatus.js"
   },
   "dependencies": {
     "@google/genai": "^2.27.0",

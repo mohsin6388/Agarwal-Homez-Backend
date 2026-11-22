@@ -376,6 +376,10 @@ const listLeads = asyncHandler(async (req, res) => {
     sortBy,
     sortOrder,
     qualifiedOnly,
+    dateFrom,
+    dateTo,
+    reply,
+    temperature,
   } = req.query;
 
   const filter = { ...scopeToOwner(req) };
@@ -396,7 +400,11 @@ const listLeads = asyncHandler(async (req, res) => {
       // Naye campaign ke liye "bhejne layak" contacts: jinko pehle message ja chuka
       // hai, jinka send fail hua (retry-later / cannot-send), aur jo kisi campaign
       // ki queue me pade hain — sab chhupao. Unki list /api/campaigns/contacted me hai.
-      const hiddenLeadIds = await contacted.getHiddenLeadIds(req.user.id);
+      const flag = (v) => ["1", "true"].includes(String(v || ""));
+      const hiddenLeadIds = await contacted.getHiddenLeadIds(req.user.id, {
+        showSent: flag(req.query.showSent),
+        showFailed: flag(req.query.showFailed),
+      });
       idClauses.push({ _id: { $nin: hiddenLeadIds } });
     } else {
       const sentLeadIds = await OutboundJob.distinct("leadId", {
@@ -418,6 +426,57 @@ const listLeads = asyncHandler(async (req, res) => {
       .map((id) => id.trim())
       .filter((id) => /^[0-9a-fA-F]{24}$/.test(id));
     idClauses.push({ _id: { $in: ids } });
+  }
+
+  // Upload Data filters: date range (IST days), reply / not replied, and
+  // hot / warm / cold. Same rules as Qualified Leads (see config/leadRules.js):
+  //   hot  = replied + score > HOT_SCORE
+  //   warm = replied + score > LEAD_SCORE and <= HOT_SCORE
+  //   cold = everyone else (no reply, or score <= LEAD_SCORE)
+  const IST_OFFSET = "+05:30";
+  const dayStart = (value) =>
+    /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))
+      ? new Date(`${value}T00:00:00.000${IST_OFFSET}`)
+      : null;
+  const from = dayStart(dateFrom);
+  const to = dayStart(dateTo);
+  if (from || to) {
+    const range = {};
+    if (from && !Number.isNaN(from.getTime())) range.$gte = from;
+    if (to && !Number.isNaN(to.getTime()))
+      range.$lt = new Date(to.getTime() + 24 * 60 * 60 * 1000);
+    if (Object.keys(range).length) idClauses.push({ createdAt: range });
+  }
+  const replyFilter = ["replied", "not_replied"].includes(String(reply || ""))
+    ? String(reply)
+    : "";
+  const tempFilter = ["hot", "warm", "cold"].includes(String(temperature || ""))
+    ? String(temperature)
+    : "";
+  if (replyFilter || tempFilter) {
+    const { repliedIds: replySet } = await getQualificationSets(
+      req,
+      ["whatsapp", "email"].includes(String(req.query.replyChannel || ""))
+        ? String(req.query.replyChannel)
+        : "",
+    );
+    const replied = { _id: { $in: replySet } };
+    const notReplied = { _id: { $nin: replySet } };
+    if (replyFilter === "replied") idClauses.push(replied);
+    if (replyFilter === "not_replied") idClauses.push(notReplied);
+    if (tempFilter === "hot")
+      idClauses.push({ $and: [replied, { leadScore: { $gt: HOT_SCORE } }] });
+    if (tempFilter === "warm")
+      idClauses.push({
+        $and: [
+          replied,
+          { leadScore: { $gt: LEAD_SCORE, $lte: HOT_SCORE } },
+        ],
+      });
+    if (tempFilter === "cold")
+      idClauses.push({
+        $or: [notReplied, { leadScore: { $not: { $gt: LEAD_SCORE } } }],
+      });
   }
 
   // Qualified Leads (and WhatsApp → Leads / Email → Leads):
@@ -467,13 +526,19 @@ const listLeads = asyncHandler(async (req, res) => {
     if (fileClause) filter.$and = [...(filter.$and || []), fileClause];
   }
   if (search) {
-    const escaped = String(search)
+    // Har word kisi na kisi field me milna chahiye ("rahul noida" = name me
+    // rahul + address me noida). Phone me spaces / +91 / dashes ignore hote hain.
+    const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const words = String(search)
       .trim()
       .slice(0, 120)
-      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (escaped) {
-      const re = new RegExp(escaped, "i");
-      filter.$or = [
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 6);
+    const wordClauses = words.map((word) => {
+      const re = new RegExp(escapeRe(word), "i");
+      const digits = word.replace(/\D/g, "");
+      const fields = [
         { name: re },
         { email: re },
         { phone: re },
@@ -483,7 +548,12 @@ const listLeads = asyncHandler(async (req, res) => {
         { notes: re },
         { requirements: re },
       ];
-    }
+      if (digits.length >= 3 && digits !== word)
+        fields.push({ phone: new RegExp(escapeRe(digits)) });
+      return { $or: fields };
+    });
+    if (wordClauses.length)
+      filter.$and = [...(filter.$and || []), ...wordClauses];
   }
 
   // _id as a tie-breaker keeps the order (and so the Sr. no.) stable between pages.
@@ -639,6 +709,16 @@ const listLeads = asyncHandler(async (req, res) => {
   }
   const whatsappState = waSummary.byLead;
   const visitState = new Map(visits.map((row) => [String(row._id), row]));
+  // Contacts picker ke liye: har row ka asli WhatsApp state (hide-filter wahi rule
+  // use karta hai), taaki \"Nahi bheja\" dikha kar fail/queue wale contacts na chhupein.
+  let contactedState = null;
+  if (channel === "whatsapp") {
+    try {
+      contactedState = await contacted.getContactedState(req.user.id);
+    } catch {
+      contactedState = null;
+    }
+  }
   const leadsWithStatus = leads.map((lead) => {
     const key = String(lead._id);
     const wa = whatsappState.get(key) || {};
@@ -650,6 +730,10 @@ const listLeads = asyncHandler(async (req, res) => {
     return {
       ...lead,
       conversationStarted: Boolean(lastMessageByLead.get(key)),
+      whatsappContactState: contactedState
+        ? contactedState.byLead.get(key)?.group ||
+          (contactedState.queuedIds.has(key) ? "queued" : null)
+        : undefined,
       whatsappMessageStatus: waJob?.status || wa.sentStatus || "not_sent",
       whatsappSentAt: waJob?.sentAt || wa.sentAt || null,
       whatsappReplyAt: wa.replyAt || null,

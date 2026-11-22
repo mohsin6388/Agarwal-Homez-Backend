@@ -131,7 +131,11 @@ async function getOutreachSummary(ownerId) {
   const match = { ownerId: oid(ownerId) };
   const [byChannel, activeCampaigns, nextWa, nextEmail] = await Promise.all([
     aggregateByChannel(match),
-    Campaign.countDocuments({ ownerId, status: { $in: ["active", "paused"] } }),
+    Campaign.countDocuments({
+      ownerId,
+      deletedAt: null,
+      status: { $in: ["active", "paused"] },
+    }),
     OutboundJob.findOne({ ...match, channel: "whatsapp", status: "pending" })
       .sort({ nextRunAt: 1 })
       .select("nextRunAt")
@@ -350,7 +354,7 @@ async function scheduleCampaignJobs({ campaign, leads }) {
 
 /** Owner ke recent campaigns + har ek ka channel-wise progress */
 async function listCampaigns(ownerId, { limit = 20 } = {}) {
-  const campaigns = await Campaign.find({ ownerId })
+  const campaigns = await Campaign.find({ ownerId, deletedAt: null })
     .sort({ createdAt: -1 })
     .limit(limit)
     .lean();
@@ -432,7 +436,11 @@ async function listJobs(
     ];
   } else if (status === "sent") {
     filter.status = "sent";
-    filter.deliveryStatus = { $ne: "failed" };
+    // Email: "sent" tabhi jab Brevo ne confirm kiya ki pahunch gayi. WhatsApp: pehle jaisa.
+    filter.deliveryStatus =
+      channel === "email"
+        ? { $in: ["delivered", "read"] }
+        : { $ne: "failed" };
   } else if (status) {
     filter.status = status;
   }
@@ -496,7 +504,7 @@ async function listJobs(
 /* ------------------------------------------------------------------ */
 
 async function findCampaign(ownerId, campaignId) {
-  return Campaign.findOne({ _id: campaignId, ownerId });
+  return Campaign.findOne({ _id: campaignId, ownerId, deletedAt: null });
 }
 
 /** Pending jobs ko rok do (jo chal chuka hai woh nahi rukega) */
