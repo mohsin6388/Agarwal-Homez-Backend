@@ -1630,6 +1630,18 @@
 //   detectRegion,
 // };
 
+//==================================================================================
+// WhatsApp profile name na ho to lead ka naam "WhatsApp 9198..." type placeholder
+// ban jata hai. Aise naam ko "naam pata nahi" maana jayega.
+function isPlaceholderName(name) {
+  const n = String(name || "").trim();
+  if (!n) return true;
+  if (/^whatsapp[\s_-]*\+?\d+$/i.test(n)) return true;
+  if (/^\+?[\d\s-]{6,}$/.test(n)) return true;
+  if (/^(unknown|na|n\/a|customer|user|lead|guest)$/i.test(n)) return true;
+  return false;
+}
+
 function detectRegion(phone) {
   const digits = String(phone || "").replace(/\D/g, "");
 
@@ -1685,9 +1697,17 @@ const UPCOMING_PROJECT = {
   website: "www.agarwalhomez.com",
 };
 
-function buildUpcomingProjectBlock({ cameFromBroadcast = false } = {}) {
+function buildUpcomingProjectBlock({
+  cameFromBroadcast = false,
+  leadName = "",
+} = {}) {
   if (!UPCOMING_PROJECT.ENABLED) return "";
   const u = UPCOMING_PROJECT;
+
+  const nameKnown = !isPlaceholderName(leadName);
+  const nameLine = nameKnown
+    ? `Customer name: ${leadName} (KNOWN from their WhatsApp contact).`
+    : `Customer name: NOT AVAILABLE (WhatsApp contact has no usable name).`;
 
   const broadcastFlag = cameFromBroadcast
     ? `CONFIRMED: THIS customer was SENT this project's WhatsApp broadcast / email
@@ -1797,21 +1817,34 @@ IMPORTANT — DO NOT CONFUSE PROJECTS:
 - If the customer asks for "new launch" generally and has not named a
   project, mention this upcoming project first.
 
-HOW TO ANSWER (REVEAL STEP BY STEP — NEVER DUMP EVERYTHING AT ONCE):
+HOW TO ANSWER (STEP BY STEP — NEVER DUMP EVERYTHING AT ONCE):
 
-1. FIRST message about the project (e.g. "new project launch hora hai kya?",
-   "new county project?"): ONLY confirm that ${u.builder} has an upcoming
-   pre-launch project in ${u.location} (prime location). Then ask ONE short
-   question about what they want to know. In this first reply do NOT give
-   size, do NOT give rate and do NOT offer sales-team connect.
-2. After that, give ONLY the fact the customer asked for, one fact per reply:
-   - asks size / area / kitna bada -> tentative size ${u.sizeText} only
-   - asks price / rate -> tentative rate ${u.rateText} only
-   - asks location -> ${u.location}, prime location
-   - asks bedrooms -> configuration is not finalised yet
-3. Only if the customer explicitly asks for "details" / "complete details" /
-   "sab batao", give a short summary: pre-launch, location, tentative size
-   and tentative rate together (still 3 lines max).
+${nameLine}
+
+NAME RULE (very important):
+- If the name is KNOWN, NEVER ask for it, not even once. Use it naturally
+  now and then (e.g. "Mohsin, ...").
+- If the name is NOT AVAILABLE, do NOT ask in the first replies. Ask for it
+  only ONCE, at the sales-handover step (step 9).
+- Do NOT ask for the city for this project (it is in Noida, Sector 150).
+- Never repeat a question the customer already answered or ignored, and if
+  the customer says "yes" / "tell me more" to your offer, DELIVER the
+  information instead of asking another question.
+
+1. FIRST message about the project (e.g. "is a new project being launched?",
+   "new county project?"): confirm that ${u.builder} has an upcoming
+   pre-launch project in ${u.location} (prime location) and give the
+   tentative sizes (${u.sizeText}). Then ask only: would they like to know the
+   tentative rate too? Do NOT ask the name, do NOT offer sales connect yet.
+2. If the customer says yes / tell me more / go ahead / details: give the
+   tentative rate (${u.rateText}) and say final pricing will be confirmed by
+   the sales team at launch. Do not repeat what you already said. Then go to
+   the sales handover (step 9).
+3. For any specific question, answer ONLY that fact:
+   - size / area -> tentative size ${u.sizeText}
+   - price / rate -> tentative rate ${u.rateText}
+   - location -> ${u.location}, prime location
+   - bedrooms -> configuration is not finalised yet
 4. Always call size and rate "tentative" and say final pricing will be
    confirmed by the sales team at launch. Price question -> give ONLY the
    tentative rate per sq ft (${u.rateText}). NEVER calculate or mention a
@@ -1825,14 +1858,19 @@ HOW TO ANSWER (REVEAL STEP BY STEP — NEVER DUMP EVERYTHING AT ONCE):
 6. Never promise discounts, bookings, guaranteed returns or appreciation
    figures. "Potential for appreciation" is fine; guarantees are not.
 7. Keep replies short (2–3 lines), in the customer's locked language.
-8. If the customer's name is not known, ask for it once, politely, AFTER you have answered their question (not in the very first reply).
-9. Offer the sales-person connect ONLY when the customer shows real interest:
-   they say interested / want more info, ask a second or third question
-   (price AND size, etc.), ask for something you cannot answer (total price,
-   possession, brochure, discount, site visit), or ask to talk to someone.
-   Do NOT offer it in the first reply. Offer: "Kya main aapko hamari sales team
-   se connect karwa doon?" Only after the customer agrees, treat it as a
-   sales-call request. You may also share ${u.salesPhones}.
+8. Never ask for budget, city or property type for this project unless the
+   customer brings them up.
+9. SALES HANDOVER (after the rate is given, or when the customer shows
+   interest, or asks something you cannot answer such as total price,
+   possession, brochure, discount, site visit, or asks to talk to someone):
+   - Name KNOWN: tell them you will pass their details to the sales person
+     who will contact them. Example: "Mohsin, main aapki details hamari
+     sales team ko bhej deti hoon, wo aapko jald contact karenge. Theek hai?"
+   - Name NOT AVAILABLE: ask for it once, as the reason for sending details:
+     "Sales team ko aapki details bhejne ke liye aapka naam bata dein?"
+     After they give it, confirm the handover.
+   Only after the customer agrees treat it as a sales-call request. You may
+   also share ${u.salesPhones}. Never promise a call time.
 10. Set extractedRequirements.projectName = "${u.name}",
    extractedRequirements.city = "Noida",
    extractedRequirements.location = "Sector 150",
@@ -1840,19 +1878,19 @@ HOW TO ANSWER (REVEAL STEP BY STEP — NEVER DUMP EVERYTHING AT ONCE):
    purpose = "invest" if they say investment, and put the interest in notes.
    Do not set property_reference for this project.
 
-EXAMPLE FLOW (shown in Hinglish; use the locked language):
+EXAMPLE FLOW (shown in Hinglish; use the locked language; name known = Mohsin):
 
 Customer: "Aapka koi new project launch hora hai kya?"
-Good (first reply, short, no size/rate/sales offer): "Ji haan 😊 ${u.builder} ka ek naya upcoming project ${u.location} me pre-launch stage me aa raha hai, prime location par. Aap iske bare me kya jaanna chahenge?"
+Good: "Ji haan 😊 ${u.builder} ka ek naya upcoming project ${u.location} me pre-launch stage me aa raha hai, prime location par. Tentative sizes ${u.sizeText} hain. Kya aap tentative rate bhi jaanna chahenge?"
+
+Customer: "Haan batao"
+Good: "Tentative rate ${u.rateText} hai. Final pricing launch par sales team confirm karegi 😊 Mohsin, main aapki details hamari sales team ko bhej deti hoon, wo aapko jald contact karenge. Theek hai?"
 
 Customer: "Size kya hai?"
-Good: "Tentative sizes ${u.sizeText} hain 😊 Price ya location ke bare me bhi bata sakti hoon."
-
-Customer: "Price?"
-Good: "Tentative rate ${u.rateText} hai. Final pricing launch par sales team confirm karegi 😊 Aapka naam bata dein?"
+Good: "Tentative sizes ${u.sizeText} hain 😊"
 
 Customer: "Expected bedrooms?"
-Good: "Bedroom configuration abhi final nahi hai, sales team share karegi 😊 Kya main aapko unse connect karwa doon?"
+Good: "Bedroom configuration abhi final nahi hai, sales team share karegi 😊"
 `;
 }
 
@@ -1880,7 +1918,8 @@ function buildSystemInstruction({
   // ---------------------------------------------------------
 
   const knownFacts = [
-    lead.name && `Name: ${lead.name}`,
+    !isPlaceholderName(lead.name) &&
+      `Name (from WhatsApp contact, KNOWN — never ask for it): ${lead.name}`,
 
     lead.phone && `WhatsApp number: ${lead.phone}`,
 
@@ -3130,7 +3169,7 @@ Rules:
 - Example replies in this prompt are written in Hinglish only as samples;
   when the locked language is English, say the same thing in English.
 
-${buildUpcomingProjectBlock({ cameFromBroadcast: cameFromUpcomingBroadcast })}
+${buildUpcomingProjectBlock({ cameFromBroadcast: cameFromUpcomingBroadcast, leadName: lead.name })}
 
 ==================================================
 AVAILABLE PROPERTIES
@@ -3481,6 +3520,7 @@ Return the complete required JSON object.
 
 module.exports = {
   UPCOMING_PROJECT,
+  isPlaceholderName,
   buildSystemInstruction,
   detectRegion,
   REPLY_RESPONSE_SCHEMA,

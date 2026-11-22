@@ -17,6 +17,7 @@ const {
   REPLY_RESPONSE_SCHEMA,
   toGeminiHistory,
   UPCOMING_PROJECT,
+  isPlaceholderName,
 } = require("./promptBuilder");
 const { analyzeConversationAsync } = require("./leadAnalyzer");
 const { attachSiteBrochure } = require("../sites/siteBrochure");
@@ -431,6 +432,17 @@ async function handleInbound({
     leadUpdates.budgetMin = mergedRequirements.budgetMin;
   if (mergedRequirements.budgetMax != null)
     leadUpdates.budgetMax = mergedRequirements.budgetMax;
+  // Customer ne chat me naam bataya aur lead ka naam abhi placeholder
+  // ("WhatsApp 9198...") hai to asli naam save kar do, taaki bot dobara na puche.
+  const givenName = String(parsed.name || "").trim();
+  if (
+    givenName &&
+    givenName.length <= 60 &&
+    !isPlaceholderName(givenName) &&
+    isPlaceholderName(lead.name)
+  ) {
+    leadUpdates.name = givenName;
+  }
   if (Object.keys(leadUpdates).length) {
     await Lead.updateOne({ _id: lead._id }, { $set: leadUpdates });
   }
