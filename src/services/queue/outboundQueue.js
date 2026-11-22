@@ -20,6 +20,8 @@ const CHANNELS = ["whatsapp", "email"];
 const IST_OFFSET = "+05:30"; // India mein DST nahi hota, isliye fixed offset safe hai
 const INSERT_CHUNK = 1000;
 
+const oid = (id) => new mongoose.Types.ObjectId(String(id));
+
 /* ------------------------------------------------------------------ */
 /* Time helpers (Asia/Kolkata)                                         */
 /* ------------------------------------------------------------------ */
