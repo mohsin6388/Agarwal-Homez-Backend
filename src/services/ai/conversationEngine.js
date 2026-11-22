@@ -363,6 +363,15 @@ async function handleInbound({
     requirements,
     parsed.extractedRequirements,
   );
+  // Language lock: ek baar choose hui to save rehti hai (DB me), taaki bot
+  // beech me English <-> Hinglish na badle.
+  const lockedLanguage = resolveLockedLanguage({
+    existing: requirements.language,
+    geminiValue: parsed.preferred_language,
+    currentMessage,
+  });
+  if (lockedLanguage) mergedRequirements.language = lockedLanguage;
+
   conversation.collectedRequirements = mergedRequirements;
   conversation.lastIntent = parsed.intent;
   conversation.lastSentiment = parsed.sentiment;
@@ -1403,6 +1412,49 @@ async function catchUpPendingConversations(brokerId) {
   }
 }
 
+// ---------------------------------------------------------
+// LANGUAGE LOCK
+// ---------------------------------------------------------
+const LANGUAGE_WORD =
+  /\b(english|hindi|hinglish|bangla|bengali|arabic|urdu)\b/i;
+const LANGUAGE_ONLY_MESSAGE =
+  /^\s*(english|hindi|hinglish|bangla|bengali|arabic|urdu)\W*$/i;
+
+// Gemini/customer ke alag-alag shabdon ko 5 fixed values me badalta hai.
+// "Hindi" ka matlab hamesha Roman-script Hinglish (Devanagari nahi).
+function normalizeLanguage(value) {
+  const v = String(value || "").toLowerCase();
+  if (!v) return null;
+  if (v.includes("english")) return "English";
+  if (v.includes("hindi") || v.includes("hinglish") || v.includes("roman"))
+    return "Hinglish";
+  if (v.includes("bangla") || v.includes("bengali")) return "Bangla";
+  if (v.includes("arabic")) return "Arabic";
+  if (v.includes("urdu")) return "Urdu";
+  return null;
+}
+
+function resolveLockedLanguage({ existing, geminiValue, currentMessage }) {
+  const msg = String(currentMessage || "");
+  const current = normalizeLanguage(existing);
+  const fromMessage = LANGUAGE_ONLY_MESSAGE.test(msg)
+    ? normalizeLanguage(msg)
+    : null;
+  const fromGemini = normalizeLanguage(geminiValue);
+
+  // Abhi tak language choose nahi hui: customer ka seedha jawab ("Hindi")
+  // sabse reliable hai, warna Gemini ki value.
+  if (!current) return fromMessage || fromGemini || null;
+
+  // Pehle se lock hai. Sirf tab badlo jab customer ne khud language
+  // badalne ko kaha ho.
+  if (fromMessage && fromMessage !== current) return fromMessage;
+  if (fromGemini && fromGemini !== current && LANGUAGE_WORD.test(msg)) {
+    return fromGemini;
+  }
+  return current;
+}
+
 function mergeRequirements(existing, incoming = {}) {
   const merged = { ...existing };
   for (const [key, value] of Object.entries(incoming)) {
@@ -1521,28 +1573,6 @@ module.exports = {
   startConversation,
   catchUpPendingConversations,
 };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // const Lead = require("../../models/Lead");
 // const Conversation = require("../../models/Conversation");

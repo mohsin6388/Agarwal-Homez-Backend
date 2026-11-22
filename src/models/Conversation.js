@@ -1,10 +1,20 @@
-// const mongoose = require('mongoose');
+// const mongoose = require("mongoose");
 // const { Schema } = mongoose;
 
 // const conversationSchema = new Schema(
 //   {
-//     leadId: { type: Schema.Types.ObjectId, ref: 'Lead', required: true, unique: true },
-//     ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+//     leadId: {
+//       type: Schema.Types.ObjectId,
+//       ref: "Lead",
+//       required: true,
+//       unique: true,
+//     },
+//     ownerId: {
+//       type: Schema.Types.ObjectId,
+//       ref: "User",
+//       required: true,
+//       index: true,
+//     },
 
 //     // Meta WhatsApp Cloud API has no per-thread "chat id" the way Unipile
 //     // did — every send just targets the lead's phone number directly, so
@@ -17,8 +27,8 @@
 
 //     status: {
 //       type: String,
-//       enum: ['ai_active', 'manual', 'paused', 'closed'],
-//       default: 'ai_active',
+//       enum: ["ai_active", "manual", "paused", "closed"],
+//       default: "ai_active",
 //     },
 
 //     lastMessageAt: { type: Date, default: null, index: true },
@@ -27,7 +37,7 @@
 //     lastInboundAt: { type: Date, default: null, index: true },
 //     unreadCount: { type: Number, default: 0 },
 
-//     aiSummary: { type: String, default: '' },
+//     aiSummary: { type: String, default: "" },
 //     currentLeadScore: { type: Number, default: 0 },
 
 //     collectedRequirements: {
@@ -40,15 +50,27 @@
 //     },
 //     requirementsComplete: { type: Boolean, default: false },
 
+//     // Set by the loop guard when the AI was auto-paused (bot/auto-reply loop,
+//     // message flood, reply caps). Cleared by "Resume AI".
+//     aiBlockedReason: { type: String, default: null },
+//     aiBlockedAt: { type: Date, default: null },
+
 //     lastIntent: { type: String, default: null },
 //     lastSentiment: { type: String, default: null },
 
-//     recommendedProperties: [{ type: Schema.Types.ObjectId, ref: 'Property' }],
+//     recommendedProperties: [{ type: Schema.Types.ObjectId, ref: "Property" }],
 
 //     meetingStatus: {
 //       type: String,
-//       enum: ['none', 'proposed', 'scheduled', 'visited', 'not_visited', 'cancelled'],
-//       default: 'none',
+//       enum: [
+//         "none",
+//         "proposed",
+//         "scheduled",
+//         "visited",
+//         "not_visited",
+//         "cancelled",
+//       ],
+//       default: "none",
 //     },
 
 //     // Closing-step referral/handoff ("kya aap Monica ko apne kaam ke liye
@@ -58,20 +80,20 @@
 //     // (never generated freeform by the AI — see conversationEngine.js).
 //     referralStatus: {
 //       type: String,
-//       enum: ['none', 'asked', 'accepted', 'declined'],
-//       default: 'none',
+//       enum: ["none", "asked", "accepted", "declined"],
+//       default: "none",
 //     },
 //     referralAskedAt: { type: Date, default: null },
 //     referralRespondedAt: { type: Date, default: null },
 
 //     tags: [{ type: String, trim: true }],
 //   },
-//   { timestamps: true }
+//   { timestamps: true },
 // );
 
 // conversationSchema.index({ ownerId: 1, status: 1, lastMessageAt: -1 });
 
-// module.exports = mongoose.model('Conversation', conversationSchema);
+// module.exports = mongoose.model("Conversation", conversationSchema);
 
 const mongoose = require("mongoose");
 const { Schema } = mongoose;
@@ -116,6 +138,9 @@ const conversationSchema = new Schema(
     currentLeadScore: { type: Number, default: 0 },
 
     collectedRequirements: {
+      // Locked chat language: "English" / "Hinglish" / "Bangla" / "Arabic" / "Urdu".
+      // Ek baar customer ne choose kar li to poori chat isi me chalti hai.
+      language: { type: String, default: null },
       budgetMin: { type: Number, default: null },
       budgetMax: { type: Number, default: null },
       city: { type: String, default: null },
